@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>216761460+tarilka0gg@users.noreply.github.com</email>
+		<name>tarilka0gg</name>
+	</maintainer>
+	<longdescription>
+		A Windows-style installer for Linux: double-click a .deb, AppImage, Flatpak bundle or Windows .exe and
+		install it per user with launchers and an uninstall entry. GTK4/libadwaita window and a CLI.
+	</longdescription>
+	<use>
+		<flag name="gui">Build the GTK4/libadwaita window (ustan-gui)</flag>
+		<flag name="flatpak">Install flatpak: references and bundles through the flatpak tool</flag>
+		<flag name="wine">Run Windows .exe installers under Wine</flag>
+	</use>
+</pkgmetadata>

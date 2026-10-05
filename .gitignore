@@ -1,0 +1,5 @@
+target/
+*.zig-cache/
+zig/.zig-cache/
+zig/zig-out/
+/dist

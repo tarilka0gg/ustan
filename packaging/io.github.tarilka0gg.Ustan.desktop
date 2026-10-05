@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Ustan
+GenericName=App Installer
+Comment=Install .deb, AppImage, Windows and Flatpak packages
+Exec=ustan-gui %U
+Icon=ustan
+Terminal=false
+Categories=System;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/vnd.appimage;application/x-iso9660-appimage;application/vnd.flatpak;application/vnd.flatpak.ref;
+StartupNotify=true
+Keywords=install;deb;appimage;flatpak;exe;wine;

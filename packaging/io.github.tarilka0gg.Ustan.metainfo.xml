@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tarilka0gg.Ustan</id>
+  <name>Ustan</name>
+  <developer id="io.github.tarilka0gg"><name>tarilka0gg</name></developer>
+  <summary>Windows-style app installer for Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <description>
+    <p>
+      Double-click a .deb, an AppImage, a Flatpak bundle or a Windows .exe and get an install window with the
+      package's name, icon and size, instead of a terminal. Apps are installed per user under ~/.local/opt with
+      launchers and uninstall entries; .exe installers run under Wine when asked to.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/tarilka0gg/ustan</url>
+  <launchable type="desktop-id">io.github.tarilka0gg.Ustan.desktop</launchable>
+  <provides><binary>ustan</binary><binary>ustan-gui</binary></provides>
+  <releases><release version="0.1.0" date="2026-10-05"/></releases>
+  <content_rating type="oars-1.1"/>
+</component>
