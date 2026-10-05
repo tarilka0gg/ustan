@@ -1,9 +1,9 @@
 //! Plain archives (`.tar.gz|xz|zst|bz2`, `.tgz`, `.zip`): unpack, find the main executable and
 //! make it launchable. GUI-looking apps (icons/.desktop inside) get a launcher; the rest are CLI tools
 //! and get a symlink in `~/.local/bin`.
-use super::tree::{decompress, install_tree, safe_rel, Spec};
+use super::tree::{decompress, dest, install_tree, safe_rel, which, Spec};
 use super::{slug, Backend, Info, Opts};
-use crate::{desktop, dirs::Dirs, manifest::Manifest, Error, Result};
+use crate::{desktop, dirs::Dirs, manifest::Manifest, pe, Error, Result};
 use std::io::{Cursor, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,10 @@ fn lower(path: &Path) -> String {
 
 fn is_zip(path: &Path) -> bool {
     lower(path).ends_with(".zip")
+}
+
+fn is_7z(path: &Path) -> bool {
+    lower(path).ends_with(".7z")
 }
 
 fn is_tar(path: &Path) -> bool {
@@ -36,12 +40,16 @@ struct Entry {
 enum Data {
     Tar(Vec<u8>),
     Zip(Vec<u8>),
+    SevenZ(Vec<u8>),
 }
 
 fn open(path: &Path) -> Result<Data> {
     let bytes = std::fs::read(path)?;
     if is_zip(path) {
         return Ok(Data::Zip(bytes));
+    }
+    if is_7z(path) {
+        return Ok(Data::SevenZ(bytes));
     }
     let n = lower(path);
     let name = if n.ends_with(".tgz") { ".tgz" } else if n.ends_with(".txz") { ".xz" } else if n.ends_with(".tbz2") { ".bz2" } else { &n };
@@ -62,6 +70,23 @@ fn list(d: &Data) -> Result<Vec<Entry>> {
                 let _ = e.read(&mut magic);
                 out.push(Entry { path: p, mode: e.header().mode()?, size: e.header().size()?, magic });
             }
+        }
+        Data::SevenZ(z) => {
+            let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;
+            r.for_each_entries(|e, rd| {
+                if !e.is_directory() && e.has_stream() {
+                    if let Some(p) = safe_rel(e.name()) {
+                        let mut magic = [0u8; 4];
+                        let _ = rd.read(&mut magic);
+                        let a = e.windows_attributes();
+                        out.push(Entry { path: p, mode: if a & 0x8000 != 0 { a >> 16 } else { 0 }, size: e.size(), magic });
+                    }
+                }
+                // the stream must be consumed before the next entry
+                std::io::copy(rd, &mut std::io::sink())?;
+                Ok(true)
+            })
+            .map_err(|e| Error::Format(format!("7z: {e}")))?;
         }
         Data::Zip(z) => {
             let mut zr = zip::ZipArchive::new(Cursor::new(z)).map_err(|e| Error::Format(format!("zip: {e}")))?;
@@ -120,12 +145,32 @@ fn looks_gui(entries: &[Entry]) -> bool {
 fn stem(path: &Path) -> String {
     let n = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let l = n.to_lowercase();
-    for e in TAR_EXTS.iter().chain(&[".zip"]) {
+    for e in TAR_EXTS.iter().chain(&[".zip", ".7z"]) {
         if l.ends_with(e) {
             return n[..n.len() - e.len()].to_string();
         }
     }
     n
+}
+
+/// The main Windows program of an archive (for Wine): a PE file, not an uninstaller/redistributable.
+fn main_win_exe<'a>(entries: &'a [Entry], stem: &str) -> Option<&'a Entry> {
+    let stem = stem.to_lowercase();
+    entries
+        .iter()
+        .filter(|e| e.path.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")) && &e.magic[..2] == b"MZ")
+        .filter(|e| {
+            let n = e.path.file_name().unwrap().to_string_lossy().to_lowercase();
+            !["unins", "uninst", "vcredist", "vc_redist", "dxsetup", "crashpad", "crashhandler", "dotnet", "directx"].iter().any(|b| n.contains(b))
+        })
+        .max_by_key(|e| {
+            let fname = e.path.file_stem().unwrap().to_string_lossy().to_lowercase();
+            let mut score = -(e.path.components().count() as i64) * 10;
+            if !fname.is_empty() && stem.contains(&fname) {
+                score += 40;
+            }
+            (score, e.size as i64)
+        })
 }
 
 /// First `1.2` / `1.2.3` style number in a name.
@@ -159,16 +204,27 @@ struct Plan {
     name: String,
     exe: PathBuf,
     gui: bool,
+    /// A Windows program: launched through Wine.
+    wine: bool,
+}
+
+fn title(name: &str) -> String {
+    let mut c = name.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 fn plan(path: &Path, d: &Data) -> Result<Plan> {
     let entries = list(d)?;
-    let e = main_exe(&entries, &stem(path)).ok_or_else(|| Error::Format("не знайшов у архіві виконуваного файлу для Linux".into()))?;
-    let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let id = slug(&name);
-    let mut c = name.chars();
-    let name = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
-    Ok(Plan { id, name, exe: e.path.clone(), gui: looks_gui(&entries) })
+    if let Some(e) = main_exe(&entries, &stem(path)) {
+        let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        return Ok(Plan { id: slug(&name), name: title(&name), exe: e.path.clone(), gui: looks_gui(&entries), wine: false });
+    }
+    // No Linux program: a portable Windows app in a zip/7z is common, run it through Wine.
+    if let Some(e) = main_win_exe(&entries, &stem(path)) {
+        let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true });
+    }
+    Err(Error::Format("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows".into()))
 }
 
 fn extract(d: &Data, root: &Path) -> Result<()> {
@@ -179,6 +235,29 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
             for e in ar.entries()? {
                 e?.unpack_in(root)?;
             }
+        }
+        Data::SevenZ(z) => {
+            let canon = root.canonicalize()?;
+            let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;
+            r.for_each_entries(|e, rd| {
+                let Some(rel) = safe_rel(e.name()) else {
+                    std::io::copy(rd, &mut std::io::sink())?;
+                    return Ok(true);
+                };
+                let d = dest(root, &canon, &rel).map_err(|x| sevenz_rust::Error::other(x.to_string()))?;
+                if e.is_directory() {
+                    std::fs::create_dir_all(&d)?;
+                } else {
+                    let mut out = std::fs::File::create(&d)?;
+                    std::io::copy(rd, &mut out)?;
+                    let a = e.windows_attributes();
+                    if a & 0x8000 != 0 {
+                        std::fs::set_permissions(&d, std::fs::Permissions::from_mode((a >> 16) & 0o777))?;
+                    }
+                }
+                Ok(true)
+            })
+            .map_err(|e| Error::Format(format!("7z: {e}")))?;
         }
         Data::Zip(z) => {
             let mut zr = zip::ZipArchive::new(Cursor::new(z)).map_err(|e| Error::Format(format!("zip: {e}")))?;
@@ -210,13 +289,14 @@ impl Backend for Archive {
     }
 
     fn detect(&self, path: &Path) -> bool {
-        is_zip(path) || is_tar(path)
+        is_zip(path) || is_7z(path) || is_tar(path)
     }
 
     fn inspect(&self, path: &Path) -> Result<Info> {
         let d = open(path)?;
         let p = plan(path, &d)?;
-        Ok(Info { id: p.id, name: p.name, version: version_of(&stem(path)), kind: "archive", icon: None, warning: None })
+        let warning = (p.wine && which("wine").is_none()).then(|| "це програма для Windows, потрібен wine (його немає в PATH)".to_string());
+        Ok(Info { id: p.id, name: p.name, version: version_of(&stem(path)), kind: "archive", icon: None, warning })
     }
 
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
@@ -230,6 +310,26 @@ impl Backend for Archive {
             |root| extract(&d, root),
             |root, dirs, id, files| {
                 let exe = root.join(&p.exe);
+                if p.wine {
+                    let icon = std::fs::read(&exe).ok().and_then(|d| pe::icon_png(&d).ok().flatten());
+                    let mut t = format!(
+                        "[Desktop Entry]\nType=Application\nName={}\nExec=env \"WINEPREFIX={}\" wine \"{}\"\nPath={}\nCategories=Wine;\nStartupWMClass={}\n",
+                        p.name,
+                        root.join("prefix").display(),
+                        exe.display(),
+                        exe.parent().unwrap().display(),
+                        exe.file_name().unwrap().to_string_lossy().to_lowercase()
+                    );
+                    if let Some(png) = icon {
+                        let ip = root.join("icon.png");
+                        std::fs::write(&ip, png)?;
+                        t.push_str(&format!("Icon={}\n", ip.display()));
+                    }
+                    let dst = dirs.apps.join(format!("ustan-{id}.desktop"));
+                    std::fs::write(&dst, t)?;
+                    files.push(dst);
+                    return Ok(());
+                }
                 std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
                 if files.len() > 1 {
                     return Ok(()); // the archive shipped its own launchers (usr/share/applications)
@@ -277,6 +377,20 @@ mod tests {
         assert_eq!(version_of("app-v2.5"), Some("2.5".into()));
         assert_eq!(version_of("x86_64"), None);
         assert!(is_tar(Path::new("a.tar.zst")) && !is_tar(Path::new("a.pkg.tar.zst")));
+    }
+
+    #[test]
+    fn windows_main_exe_skips_uninstallers() {
+        let e = |p: &str, size: u64, magic: &[u8; 4]| Entry { path: PathBuf::from(p), mode: 0, size, magic: *magic };
+        let v = vec![
+            e("App/unins000.exe", 9_000_000, b"MZ\x90\x00"),
+            e("App/vc_redist.x64.exe", 20_000_000, b"MZ\x90\x00"),
+            e("App/App.exe", 1_000_000, b"MZ\x90\x00"),
+            e("App/notes.exe", 10, b"junk"),
+            e("App/bin/helper.exe", 500, b"MZ\x90\x00"),
+        ];
+        assert_eq!(main_win_exe(&v, "App-1.0").unwrap().path, PathBuf::from("App/App.exe"));
+        assert!(main_win_exe(&[e("x/readme.txt", 5, b"hi!!")], "x").is_none());
     }
 
     #[test]

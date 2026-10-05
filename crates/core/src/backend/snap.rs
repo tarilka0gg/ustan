@@ -1,7 +1,7 @@
 //! `.snap` packages: a squashfs with `meta/snap.yaml`. We unpack without snapd and generate
 //! launchers that set up the `SNAP*` environment. Snaps that rely on other snaps (a `base`
 //! or content runtimes such as gnome-*) can only run if they bundle what they need.
-use super::tree::{dest, install_tree, remove_existing, safe_rel, Spec};
+use super::tree::{which, dest, install_tree, remove_existing, safe_rel, Spec};
 use std::path::PathBuf;
 use super::{slug, Backend, Icon, Info, Opts};
 use crate::{dirs::Dirs, manifest::Manifest, Error, Result};
@@ -279,10 +279,6 @@ fn link_plug(root: &Path, plug: &Plug, dirs: &Dirs, opts: &Opts) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn which(cmd: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(cmd)).find(|p| p.is_file())
 }
 
 fn warning(m: &Meta) -> Option<String> {

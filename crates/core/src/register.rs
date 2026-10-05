@@ -33,6 +33,8 @@ pub const MIME_ARCHIVE: &[&str] = &[
     "application/x-bzip2-compressed-tar",
     "application/x-tar",
     "application/zip",
+    "application/x-7z-compressed",
+    "application/java-archive",
 ];
 
 fn tool(home: &Path, prog: &str, args: &[&str]) -> Result<()> {

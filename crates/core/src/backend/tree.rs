@@ -13,6 +13,11 @@ pub struct Spec<'a> {
     pub source: &'a Path,
 }
 
+/// First `cmd` found in PATH.
+pub fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(cmd)).find(|p| p.is_file())
+}
+
 /// Decompress by file/member name suffix: `.gz`/`.tgz`, `.xz`, `.zst`, `.bz2`, or plain.
 pub fn decompress(name: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     let n = name.to_lowercase();
