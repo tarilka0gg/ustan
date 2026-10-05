@@ -85,6 +85,26 @@ fn spinner_page(title: &str, desc: &str) -> adw::StatusPage {
     p
 }
 
+/// Animate `w`'s opacity (0 -> 1 fades in, 1 -> 0 fades out), optionally after a delay.
+fn fade(w: &impl IsA<gtk::Widget>, from: f64, to: f64, ms: u32, delay_ms: u32, then: impl Fn() + 'static) {
+    let w = w.clone().upcast::<gtk::Widget>();
+    w.set_opacity(from);
+    let start = move || {
+        let target = adw::CallbackAnimationTarget::new({
+            let w = w.clone();
+            move |v| w.set_opacity(v)
+        });
+        let anim = adw::TimedAnimation::builder().widget(&w).value_from(from).value_to(to).duration(ms).easing(adw::Easing::EaseOutCubic).target(&target).build();
+        anim.connect_done(move |_| then());
+        anim.play();
+    };
+    if delay_ms == 0 {
+        start();
+    } else {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(delay_ms as u64), start);
+    }
+}
+
 fn show_icon(sp: &adw::StatusPage, info: &Info) {
     if let Some(i) = &info.icon {
         let f = std::env::temp_dir().join(format!("ustan-icon-{}.{}", std::process::id(), i.ext));
@@ -100,7 +120,7 @@ fn show_icon(sp: &adw::StatusPage, info: &Info) {
 
 /// Bottom action bar: secondary actions on the left, the main one on the right.
 struct Bar {
-    root: gtk::ActionBar,
+    revealer: gtk::Revealer,
     cancel: gtk::Button,
     remove: gtk::Button,
     main: gtk::Button,
@@ -119,11 +139,12 @@ impl Bar {
         root.pack_start(&remove);
         root.pack_end(&main);
         root.pack_end(&close);
-        Bar { root, cancel, remove, main, close }
+        let revealer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideUp).transition_duration(260).child(&root).build();
+        Bar { revealer, cancel, remove, main, close }
     }
 
     fn show_ready(&self, has_existing: bool) {
-        self.root.set_visible(true);
+        self.revealer.set_reveal_child(true);
         self.cancel.set_visible(true);
         self.remove.set_visible(has_existing);
         self.main.set_visible(true);
@@ -131,11 +152,11 @@ impl Bar {
     }
 
     fn show_busy(&self) {
-        self.root.set_visible(false);
+        self.revealer.set_reveal_child(false);
     }
 
     fn show_end(&self, label: &str, ok: bool) {
-        self.root.set_visible(true);
+        self.revealer.set_reveal_child(true);
         for b in [&self.cancel, &self.remove, &self.main] {
             b.set_visible(false);
         }
@@ -150,9 +171,8 @@ fn install_window(app: &adw::Application, src: String) {
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
     let bar = std::rc::Rc::new(Bar::new());
-    bar.root.set_visible(false);
-    view.add_bottom_bar(&bar.root);
-    let stack = gtk::Stack::new();
+    view.add_bottom_bar(&bar.revealer);
+    let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(320).build();
     view.set_content(Some(&stack));
     win.set_content(Some(&view));
     stack.add_named(&spinner_page("Читаю пакет…", &src), Some("loading"));
@@ -295,14 +315,14 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay) {
     if apps.is_empty() {
         group.set_description(Some("Поки нічого. Відкрий .deb, .AppImage, .exe чи .flatpakref подвійним кліком або кнопкою зверху."));
     }
-    for m in apps {
+    for (i, m) in apps.into_iter().enumerate() {
         let row = adw::ActionRow::builder().title(&m.name).subtitle(format!("{} · {}", m.kind, m.version.as_deref().unwrap_or("—"))).build();
         let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
         row.add_suffix(&del);
-        let (bin, toasts, id) = (bin.clone(), toasts.clone(), m.id.clone());
+        let (bin, toasts, id, row2) = (bin.clone(), toasts.clone(), m.id.clone(), row.clone());
         del.connect_clicked(move |b| {
             b.set_sensitive(false);
-            let (bin, toasts, id) = (bin.clone(), toasts.clone(), id.clone());
+            let (bin, toasts, id, row) = (bin.clone(), toasts.clone(), id.clone(), row2.clone());
             glib::spawn_future_local(async move {
                 let id2 = id.clone();
                 let r = spawn(move || {
@@ -314,9 +334,10 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay) {
                     Ok(()) => format!("{id} видалено"),
                     Err(e) => format!("Помилка: {e}"),
                 }));
-                refresh(&bin, &toasts);
+                fade(&row, 1.0, 0.0, 220, 0, move || refresh(&bin, &toasts));
             });
         });
+        fade(&row, 0.0, 1.0, 380, 60 * i as u32, || {});
         group.add(&row);
     }
     bin.set_child(Some(&group));
