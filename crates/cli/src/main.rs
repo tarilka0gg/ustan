@@ -31,6 +31,9 @@ enum Cmd {
         /// Also take over Windows .exe (replaces e.g. PortProton as default!)
         #[arg(long)]
         exe: bool,
+        /// Also take over .tar.gz/.tar.xz/.tar.zst/.zip (replaces your archive manager as default!)
+        #[arg(long)]
+        archives: bool,
     },
     /// Undo `register`
     Unregister,
@@ -71,6 +74,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PathBuf::from(&source)
             };
             let b = backend::pick(&file).ok_or("unsupported package type")?;
+            if let Ok(info) = b.inspect(&file) {
+                if let Some(w) = info.warning {
+                    eprintln!("увага: {w}");
+                }
+            }
             let mut m = b.install(&file, &dirs, &backend::Opts { installer })?;
             if fetch::is_url(&source) {
                 m.url = Some(source.clone());
@@ -80,13 +88,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("installed {} {}", m.id, m.version.as_deref().unwrap_or(""));
         }
-        Cmd::Register { exe } => {
+        Cmd::Register { exe, archives } => {
             let gui = std::env::current_exe()?.with_file_name("ustan-gui");
             if !gui.exists() {
                 return Err(format!("{} not found; build with `cargo build --workspace`", gui.display()).into());
             }
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
-            register::register(&home, &gui, exe)?;
+            register::register(&home, &gui, exe, archives)?;
             println!("registered {}{}", gui.display(), if exe { " (incl. .exe)" } else { "" });
         }
         Cmd::Unregister => {

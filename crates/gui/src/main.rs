@@ -214,6 +214,9 @@ fn install_window(app: &adw::Application, src: String) {
                     }
                     None => page(&prep.info.name, &describe(&prep.info)),
                 };
+                if let Some(w) = &prep.info.warning {
+                    ready.set_description(Some(&format!("{}\n⚠ {w}", ready.description().unwrap_or_default())));
+                }
                 show_icon(&ready, &prep.info);
 
                 let installer = adw::SwitchRow::builder().title("Це програма-установник").subtitle("Запустити через Wine і створити ярлики").build();

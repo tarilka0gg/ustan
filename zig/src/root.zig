@@ -3,6 +3,7 @@ const ar = @import("ar.zig");
 const elf = @import("elf.zig");
 const pe = @import("pe.zig");
 const lnk = @import("lnk.zig");
+const rpm = @import("rpm.zig");
 
 pub const Member = ar.Member;
 
@@ -49,7 +50,18 @@ export fn ustan_elf_section(data: [*]const u8, len: usize, name: [*]const u8, na
     return elf.section(data[0..len], name[0..name_len], out_off, out_len);
 }
 
+/// Offset of the cpio payload of an RPM. 0 on success.
+export fn ustan_rpm_payload(data: [*]const u8, len: usize, out: *u64) i32 {
+    return rpm.payload(data[0..len], out);
+}
+
+/// String tag (NAME=1000, VERSION=1001, RELEASE=1002, PAYLOADCOMPRESSOR=1125...) of an RPM's main header.
+export fn ustan_rpm_string(data: [*]const u8, len: usize, tag: u32, buf: [*]u8, cap: usize, out_len: *usize) i32 {
+    return rpm.string(data[0..len], tag, buf[0..cap], out_len);
+}
+
 test {
+    _ = rpm;
     _ = lnk;
     _ = pe;
     _ = ar;

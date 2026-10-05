@@ -8,10 +8,16 @@ use std::process::Command;
 
 pub struct Exe;
 
+fn is_msi(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("msi"))
+}
+
 fn read_exe(path: &Path) -> Result<Vec<u8>> {
     let data = std::fs::read(path)?;
-    if data.len() < 0x40 || &data[..2] != b"MZ" {
-        return Err(Error::Format("not a Windows executable".into()));
+    // .msi is an OLE compound file, .exe a PE ("MZ").
+    let ok = if is_msi(path) { data.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) } else { data.len() >= 0x40 && &data[..2] == b"MZ" };
+    if !ok {
+        return Err(Error::Format("not a Windows executable or installer".into()));
     }
     Ok(data)
 }
@@ -26,18 +32,18 @@ impl Backend for Exe {
     }
 
     fn detect(&self, path: &Path) -> bool {
-        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("msi"))
     }
 
     fn inspect(&self, path: &Path) -> Result<Info> {
         let data = read_exe(path)?;
         let n = stem(path);
         let icon = pe::icon_png(&data).ok().flatten().map(|bytes| super::Icon { ext: "png", bytes });
-        Ok(Info { id: slug(&n), name: n, version: None, kind: "exe", icon })
+        Ok(Info { id: slug(&n), name: n, version: None, kind: if is_msi(path) { "msi" } else { "exe" }, icon, warning: None })
     }
 
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
-        if opts.installer {
+        if opts.installer || is_msi(path) {
             return install_installer(path, dirs);
         }
         let data = read_exe(path)?;
@@ -160,7 +166,12 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
     };
 
     // winemenubuilder off: we make the launchers ourselves, wine must not litter ~/.local/share/applications.
-    let st = Command::new("wine")
+    // An .msi is run through msiexec; an .exe installer is run directly.
+    let mut cmd = Command::new("wine");
+    if is_msi(path) {
+        cmd.args(["msiexec", "/i"]);
+    }
+    let st = cmd
         .arg(std::fs::canonicalize(path)?)
         .env("WINEPREFIX", &prefix)
         .env("WINEDLLOVERRIDES", "winemenubuilder.exe=d")
@@ -222,7 +233,7 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
             return Err(e);
         }
     }
-    let m = Manifest { id, name, version: None, kind: "exe-installer".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
+    let m = Manifest { id, name, version: None, kind: if is_msi(path) { "msi" } else { "exe-installer" }.into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
     m.save(&dirs.state)?;
     Ok(m)
 }

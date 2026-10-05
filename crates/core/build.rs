@@ -5,7 +5,9 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let status = Command::new("zig")
-        .args(["build", "-Doptimize=ReleaseSafe", "--prefix"])
+        // `-Dcpu=baseline`: without it Zig compiles for the build machine's own CPU and the library
+        // dies with an illegal instruction on an older one.
+        .args(["build", "-Doptimize=ReleaseSafe", "-Dcpu=baseline", "--prefix"])
         .arg(&out)
         .current_dir(&root)
         .status()

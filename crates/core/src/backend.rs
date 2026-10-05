@@ -22,6 +22,8 @@ pub struct Info {
     pub version: Option<String>,
     pub kind: &'static str,
     pub icon: Option<Icon>,
+    /// Something the user should know before installing (e.g. a snap that needs other snaps).
+    pub warning: Option<String>,
 }
 
 /// Per-install switches.
@@ -40,12 +42,17 @@ pub trait Backend {
 }
 
 pub mod appimage;
+pub mod arch;
+pub mod archive;
 pub mod deb;
 pub mod exe;
 pub mod flatpak;
+pub mod rpm;
+pub mod snap;
+pub mod tree;
 
 pub fn all() -> Vec<Box<dyn Backend>> {
-    vec![Box::new(deb::Deb), Box::new(appimage::AppImage), Box::new(flatpak::Flatpak), Box::new(exe::Exe)]
+    vec![Box::new(deb::Deb), Box::new(appimage::AppImage), Box::new(flatpak::Flatpak), Box::new(exe::Exe), Box::new(rpm::Rpm), Box::new(arch::Arch), Box::new(snap::Snap), Box::new(archive::Archive)]
 }
 
 pub fn pick(path: &Path) -> Option<Box<dyn Backend>> {

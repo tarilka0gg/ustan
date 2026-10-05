@@ -50,15 +50,15 @@ impl Backend for Flatpak {
 
     fn inspect(&self, path: &Path) -> Result<Info> {
         match source(path).ok_or_else(|| Error::Format("not a flatpak source".into()))? {
-            Source::Remote(id) => Ok(Info { id: slug(&id), name: id, version: None, kind: "flatpak", icon: None }),
+            Source::Remote(id) => Ok(Info { id: slug(&id), name: id, version: None, kind: "flatpak", icon: None, warning: None }),
             Source::Ref(f) => {
                 let id = ref_field(&f, "Name").ok_or_else(|| Error::Format("flatpakref has no Name".into()))?;
                 let name = ref_field(&f, "Title").unwrap_or_else(|| id.clone());
-                Ok(Info { id: slug(&id), name, version: ref_field(&f, "Branch"), kind: "flatpak", icon: None })
+                Ok(Info { id: slug(&id), name, version: ref_field(&f, "Branch"), kind: "flatpak", icon: None, warning: None })
             }
             Source::Bundle(f) => {
                 let n = Path::new(&f).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                Ok(Info { id: slug(&n), name: n, version: None, kind: "flatpak", icon: None })
+                Ok(Info { id: slug(&n), name: n, version: None, kind: "flatpak", icon: None, warning: None })
             }
         }
     }

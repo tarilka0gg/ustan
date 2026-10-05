@@ -53,12 +53,21 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Resolve an `Icon=` value to a file inside `root`, preferring SVG then the largest raster.
 pub fn find_icon(root: &Path, icon: &str) -> Option<PathBuf> {
+    find_icon_in(root, icon, &["usr/share/icons", "usr/share/pixmaps", "usr/local/share/icons", "opt"])
+}
+
+/// Like [`find_icon`], but searches the whole tree (for archives with an arbitrary layout).
+pub fn find_icon_deep(root: &Path, icon: &str) -> Option<PathBuf> {
+    find_icon_in(root, icon, &[""])
+}
+
+fn find_icon_in(root: &Path, icon: &str, dirs: &[&str]) -> Option<PathBuf> {
     if icon.starts_with('/') {
         let p = under(root, icon);
         return p.is_file().then_some(p);
     }
     let mut all = Vec::new();
-    for d in ["usr/share/icons", "usr/share/pixmaps", "usr/local/share/icons", "opt"] {
+    for d in dirs {
         walk(&root.join(d), &mut all);
     }
     let is_img = |p: &PathBuf| p.extension().is_some_and(|e| matches!(e.to_str(), Some("png" | "svg" | "xpm")));

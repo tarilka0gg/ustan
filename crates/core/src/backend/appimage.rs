@@ -128,7 +128,7 @@ impl Backend for AppImage {
         let (rel, text) = top_level_desktop(&fs).ok_or_else(|| Error::Format("no .desktop in AppImage".into()))?;
         let name = desktop::name(&text).unwrap_or_else(|| rel.trim_end_matches(".desktop").to_string());
         let icon = read_icon(&fs, &text);
-        Ok(Info { id: slug(&name), name, version: value(&text, "X-AppImage-Version").map(str::to_string), kind: "appimage", icon })
+        Ok(Info { id: slug(&name), name, version: value(&text, "X-AppImage-Version").map(str::to_string), kind: "appimage", icon, warning: None })
     }
 
     fn install(&self, path: &Path, dirs: &Dirs, _opts: &Opts) -> Result<Manifest> {

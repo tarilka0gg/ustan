@@ -12,6 +12,8 @@ pub const MIME_DEFAULT: &[&str] = &[
     "application/x-iso9660-appimage",
     "application/vnd.flatpak",
     "application/vnd.flatpak.ref",
+    "application/x-rpm",
+    "application/vnd.snap",
 ];
 
 /// Windows executables: opt-in, they usually belong to Wine/Proton launchers.
@@ -20,6 +22,17 @@ pub const MIME_EXE: &[&str] = &[
     "application/x-msdownload",
     "application/x-dosexec",
     "application/x-ms-dos-executable",
+    "application/x-msi",
+];
+
+/// Archives: opt-in, they normally belong to the archive manager.
+pub const MIME_ARCHIVE: &[&str] = &[
+    "application/x-compressed-tar",
+    "application/x-xz-compressed-tar",
+    "application/x-zstd-compressed-tar",
+    "application/x-bzip2-compressed-tar",
+    "application/x-tar",
+    "application/zip",
 ];
 
 fn tool(home: &Path, prog: &str, args: &[&str]) -> Result<()> {
@@ -33,10 +46,16 @@ fn tool(home: &Path, prog: &str, args: &[&str]) -> Result<()> {
     if st.success() { Ok(()) } else { Err(Error::Format(format!("{prog} failed: {st}"))) }
 }
 
-pub fn register(home: &Path, gui: &Path, with_exe: bool) -> Result<()> {
+pub fn register(home: &Path, gui: &Path, with_exe: bool, with_archives: bool) -> Result<()> {
     let apps = home.join(".local/share/applications");
     std::fs::create_dir_all(&apps)?;
-    let all: Vec<&str> = if with_exe { MIME_DEFAULT.iter().chain(MIME_EXE).copied().collect() } else { MIME_DEFAULT.to_vec() };
+    let mut all: Vec<&str> = MIME_DEFAULT.to_vec();
+    if with_exe {
+        all.extend(MIME_EXE);
+    }
+    if with_archives {
+        all.extend(MIME_ARCHIVE);
+    }
     let text = format!(
         "[Desktop Entry]\nType=Application\nName=Ustan\nComment=Install .deb, AppImage, Windows and Flatpak packages\nExec=\"{}\" %U\nIcon=system-software-install\nTerminal=false\nCategories=System;PackageManager;\nMimeType={};\nStartupNotify=true\n",
         gui.display(),
@@ -45,10 +64,7 @@ pub fn register(home: &Path, gui: &Path, with_exe: bool) -> Result<()> {
     std::fs::write(apps.join(DESKTOP), text)?;
     let _ = tool(home, "update-desktop-database", &[apps.to_str().unwrap()]);
     let mut args = vec!["default", DESKTOP];
-    args.extend(MIME_DEFAULT);
-    if with_exe {
-        args.extend(MIME_EXE);
-    }
+    args.extend(all.iter().copied());
     tool(home, "xdg-mime", &args)
 }
 
