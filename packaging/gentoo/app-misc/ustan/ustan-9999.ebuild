@@ -5,10 +5,12 @@ EAPI=8
 
 CRATES=""
 # Live ebuild: cargo_live_src_unpack fetches the crates at unpack time (network needed, allowed for 9999).
-# EGIT_REPO_URI points at the intended GitHub location; the repository is not published yet, so until it is,
-# build from a checkout with  EGIT_OVERRIDE_REPO_TARILKA0GG_USTAN=file:///path/to/ustan  (see git-r3.eclass).
+# EGIT_REPO_URI is the public GitHub repository; to build a local checkout instead set
+#   EGIT_OVERRIDE_REPO_TARILKA0GG_USTAN=file:///path/to/ustan  (see git-r3.eclass).
 
-inherit cargo git-r3 xdg
+RUST_MIN_VER="1.92"
+
+inherit cargo desktop git-r3 xdg
 
 DESCRIPTION="Windows-style app installer for Linux: .deb, AppImage, Flatpak and .exe"
 HOMEPAGE="https://github.com/tarilka0gg/ustan"
