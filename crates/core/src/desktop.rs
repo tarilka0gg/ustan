@@ -61,12 +61,27 @@ pub fn find_icon(root: &Path, icon: &str) -> Option<PathBuf> {
     for d in ["usr/share/icons", "usr/share/pixmaps", "usr/local/share/icons", "opt"] {
         walk(&root.join(d), &mut all);
     }
-    all.into_iter()
+    let is_img = |p: &PathBuf| p.extension().is_some_and(|e| matches!(e.to_str(), Some("png" | "svg" | "xpm")));
+    let exact = all.iter().filter(|p| is_img(p) && p.file_stem().is_some_and(|s| s == icon)).max_by_key(|p| icon_score(p));
+    if let Some(p) = exact {
+        return Some(p.clone());
+    }
+    // Packages often ship the icon under another name (e.g. opt/x/product_logo_256.png).
+    let want = icon.to_lowercase();
+    all.iter()
         .filter(|p| {
-            p.file_stem().is_some_and(|s| s == icon)
-                && p.extension().is_some_and(|e| matches!(e.to_str(), Some("png" | "svg" | "xpm")))
+            is_img(p) && p.file_stem().is_some_and(|s| {
+                let s = s.to_string_lossy().to_lowercase();
+                (!want.is_empty() && s.contains(&want)) || s.contains("logo") || s.contains("icon")
+            })
         })
-        .max_by_key(|p| icon_score(p))
+        .max_by_key(|p| icon_score(p).max(trailing_number(p)))
+        .cloned()
+}
+
+fn trailing_number(p: &Path) -> u32 {
+    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    stem.rsplit(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()).unwrap_or(0)
 }
 
 /// Rewrite Exec/TryExec/Icon/Path in a desktop entry. Returns the new text.
@@ -96,6 +111,18 @@ pub fn name(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_falls_back_to_logo_files() {
+        let r = std::env::temp_dir().join(format!("ustan-i-{}", std::process::id()));
+        std::fs::create_dir_all(r.join("opt/app")).unwrap();
+        for n in ["product_logo_32.png", "product_logo_256.png", "other.png"] {
+            std::fs::write(r.join("opt/app").join(n), "").unwrap();
+        }
+        let p = find_icon(&r, "my-app").unwrap();
+        assert!(p.ends_with("product_logo_256.png"), "{p:?}");
+        let _ = std::fs::remove_dir_all(r);
+    }
 
     #[test]
     fn rewrites_exec_and_icon() {
