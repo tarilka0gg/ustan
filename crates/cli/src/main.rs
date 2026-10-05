@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use ustan_core::{backend, fetch, register, update, dirs::Dirs, manifest::Manifest};
+use ustan_core::{backend, discover, fetch, register, update, dirs::Dirs, manifest::Manifest};
 
 #[derive(Parser)]
 #[command(name = "ustan", about = "Windows-style app installer for Linux")]
@@ -40,6 +40,12 @@ enum Cmd {
         /// Only report, don't install
         #[arg(long)]
         check: bool,
+    },
+    /// Find AppImages anywhere on disk (not installed by ustan) and check them for updates
+    Scan {
+        /// Also update the ones that have a newer release (replaced in place)
+        #[arg(long)]
+        update: bool,
     },
     /// Remove an installed app
     Remove { id: String },
@@ -105,6 +111,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(update::Status::UpToDate) => println!("{}\tактуальна", m.id),
                     Ok(update::Status::Unknown(why)) => println!("{}\t? {why}", m.id),
                     Err(e) => println!("{}\tне вдалося перевірити: {e}", m.id),
+                }
+            }
+        }
+        Cmd::Scan { update } => {
+            let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
+            for f in discover::find_appimages(&home, &[dirs.opt.clone(), dirs.state.clone()]) {
+                let ver = f.version.as_deref().unwrap_or("-");
+                match update::check_found(&f) {
+                    Ok(update::Status::Available(v)) if update => {
+                        println!("{}\t{ver}\t{}\tоновлюю ({v})…", f.name, f.path.display());
+                        match update::apply_found(&f, &dirs) {
+                            Ok(new) => println!("\t\t\tоновлено до {}", new.as_deref().unwrap_or("?")),
+                            Err(e) => println!("\t\t\tпомилка: {e}"),
+                        }
+                    }
+                    Ok(update::Status::Available(v)) => println!("{}\t{ver}\t{}\tє оновлення ({v})", f.name, f.path.display()),
+                    Ok(update::Status::UpToDate) => println!("{}\t{ver}\t{}\tактуальна", f.name, f.path.display()),
+                    Ok(update::Status::Unknown(why)) => println!("{}\t{ver}\t{}\t? {why}", f.name, f.path.display()),
+                    Err(e) => println!("{}\t{ver}\t{}\tне вдалося перевірити: {e}", f.name, f.path.display()),
                 }
             }
         }

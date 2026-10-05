@@ -1,6 +1,7 @@
 pub mod ar;
 pub mod backend;
 pub mod desktop;
+pub mod discover;
 pub mod dirs;
 pub mod elf;
 pub mod fetch;

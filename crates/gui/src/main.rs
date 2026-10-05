@@ -2,7 +2,7 @@ use adw::prelude::*;
 use adw::{gdk, gio, glib, gtk};
 use std::path::PathBuf;
 use ustan_core::backend::{self, Info, Opts};
-use ustan_core::{dirs::Dirs, fetch, manifest::Manifest, update};
+use ustan_core::{dirs::Dirs, discover::{self, Found}, fetch, manifest::Manifest, update};
 
 const APP_ID: &str = "io.github.tarilka0gg.Ustan";
 
@@ -180,7 +180,7 @@ fn install_window(app: &adw::Application, src: String) {
     view.add_top_bar(&adw::HeaderBar::new());
     let bar = std::rc::Rc::new(Bar::new());
     view.add_bottom_bar(&bar.revealer);
-    let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(320).build();
+    let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeft).transition_duration(280).build();
     view.set_content(Some(&stack));
     win.set_content(Some(&view));
     stack.add_named(&spinner_page("Читаю пакет…", &src), Some("loading"));
@@ -313,6 +313,8 @@ fn manager_window(app: &adw::Application) {
         let (bin, toasts) = (bin.clone(), toasts.clone());
         move |_| {
             UPDATES.with(|u| u.borrow_mut().clear());
+            FOUND_UPD.with(|u| u.borrow_mut().clear());
+            FOUND.with(|c| *c.borrow_mut() = None);
             toasts.add_toast(adw::Toast::new("Перевіряю оновлення…"));
             refresh(&bin, &toasts, false, true);
         }
@@ -336,6 +338,9 @@ fn pick_file(app: &adw::Application, parent: &adw::ApplicationWindow) {
 }
 
 thread_local! {
+    /// Unmanaged AppImages found on disk (None = not scanned yet) and the updates found for them.
+    static FOUND: std::cell::RefCell<Option<Vec<Found>>> = Default::default();
+    static FOUND_UPD: std::cell::RefCell<std::collections::HashMap<PathBuf, String>> = Default::default();
     /// id -> label of the update found by the last check (kept across list rebuilds, so focus
     /// changes don't re-query GitHub and don't lose the badges).
     static UPDATES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
@@ -417,5 +422,92 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
         }
         group.add(&row);
     }
-    bin.set_child(Some(&group));
+    let found = adw::PreferencesGroup::builder()
+        .title("Знайдено на диску")
+        .description("AppImage, які лежать поза ustan. Оновлюються на місці.")
+        .margin_bottom(18)
+        .margin_start(18)
+        .margin_end(18)
+        .build();
+    fill_found(&found, bin, toasts, check);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    col.append(&group);
+    col.append(&found);
+    bin.set_child(Some(&col));
+}
+
+fn found_row(group: &adw::PreferencesGroup, f: &Found, check: bool, bin: &adw::Bin, toasts: &adw::ToastOverlay) {
+    let ver = f.version.as_deref().unwrap_or("—");
+    let row = adw::ActionRow::builder().title(&f.name).subtitle(format!("{ver} · {}", f.path.display())).subtitle_lines(1).build();
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.add_suffix(&actions);
+    group.add(&row);
+
+    let show = {
+        let (actions, row, f, bin, toasts) = (actions.clone(), row.clone(), f.clone(), bin.clone(), toasts.clone());
+        move |label: String| {
+            row.set_subtitle(&format!("{} · є оновлення: {label} · {}", f.version.as_deref().unwrap_or("—"), f.path.display()));
+            let upd = gtk::Button::builder().label("Оновити").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+            actions.append(&upd);
+            let (f, bin, toasts) = (f.clone(), bin.clone(), toasts.clone());
+            upd.connect_clicked(move |b| {
+                b.set_sensitive(false);
+                b.set_label("Оновлюю…");
+                let (f, bin, toasts) = (f.clone(), bin.clone(), toasts.clone());
+                glib::spawn_future_local(async move {
+                    let f2 = f.clone();
+                    let r = spawn(move || update::apply_found(&f2, &Dirs::from_env()).map_err(|e| e.to_string())).await;
+                    toasts.add_toast(adw::Toast::new(&match &r {
+                        Ok(_) => format!("{} оновлено", f.name),
+                        Err(e) => format!("Не вдалося оновити: {e}"),
+                    }));
+                    FOUND_UPD.with(|u| u.borrow_mut().remove(&f.path));
+                    FOUND.with(|c| *c.borrow_mut() = None); // versions changed: rescan
+                    refresh(&bin, &toasts, false, false);
+                });
+            });
+        }
+    };
+
+    if let Some(label) = FOUND_UPD.with(|u| u.borrow().get(&f.path).cloned()) {
+        show(label);
+    } else if check && f.update_info.is_some() {
+        let f = f.clone();
+        glib::spawn_future_local(async move {
+            let f2 = f.clone();
+            if let Ok(update::Status::Available(label)) = spawn(move || update::check_found(&f2)).await {
+                FOUND_UPD.with(|u| u.borrow_mut().insert(f.path.clone(), label.clone()));
+                show(label);
+            }
+        });
+    }
+}
+
+/// Fill the "found on disk" group from the cache, scanning in the background when needed.
+fn fill_found(group: &adw::PreferencesGroup, bin: &adw::Bin, toasts: &adw::ToastOverlay, check: bool) {
+    if let Some(list) = FOUND.with(|c| c.borrow().clone()) {
+        for f in &list {
+            found_row(group, f, check, bin, toasts);
+        }
+        group.set_visible(!list.is_empty());
+        return;
+    }
+    let loading = adw::ActionRow::builder().title("Шукаю по диску…").build();
+    loading.add_prefix(&adw::Spinner::new());
+    group.add(&loading);
+    let (group, bin, toasts) = (group.clone(), bin.clone(), toasts.clone());
+    glib::spawn_future_local(async move {
+        let list = spawn(|| {
+            let d = Dirs::from_env();
+            let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            discover::find_appimages(&home, &[d.opt, d.state])
+        })
+        .await;
+        group.remove(&loading);
+        FOUND.with(|c| *c.borrow_mut() = Some(list.clone()));
+        for f in &list {
+            found_row(&group, f, true, &bin, &toasts);
+        }
+        group.set_visible(!list.is_empty());
+    });
 }

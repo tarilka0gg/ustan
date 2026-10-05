@@ -158,6 +158,38 @@ pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
     Err(Error::Format("для цієї програми невідоме джерело оновлень".into()))
 }
 
+/// Update check for an unmanaged AppImage found on disk.
+pub fn check_found(f: &crate::discover::Found) -> Result<Status> {
+    let m = Manifest { kind: "appimage".into(), version: f.version.clone(), update_info: f.update_info.clone(), ..Default::default() };
+    check(&m)
+}
+
+/// Replace an unmanaged AppImage in place with the latest release (same path, same permissions).
+/// Returns the new version if the file declares one.
+pub fn apply_found(f: &crate::discover::Found, dirs: &Dirs) -> Result<Option<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    let info = f.update_info.as_deref().ok_or_else(|| Error::Format("у цього AppImage немає інформації про оновлення".into()))?;
+    let (rel, _) = gh_release(info)?;
+    let file = fetch::download(&rel.url, &dirs.state.join("cache"), None)?;
+    let res = (|| -> Result<Option<String>> {
+        if !backend::appimage::is_appimage(&file) {
+            return Err(Error::Format("завантажений файл не є AppImage".into()));
+        }
+        let probe = backend::appimage::probe(&file)?;
+        let mode = std::fs::metadata(&f.path)?.permissions().mode() | 0o111;
+        let tmp = f.path.with_extension("AppImage.ustan-new");
+        std::fs::copy(&file, &tmp)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        // Atomic on the same filesystem; a running copy keeps its old inode.
+        std::fs::rename(&tmp, &f.path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
+        Ok(probe.version)
+    })();
+    let _ = std::fs::remove_file(&file);
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::glob;

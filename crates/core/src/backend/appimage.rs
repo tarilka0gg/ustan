@@ -10,15 +10,48 @@ pub struct AppImage;
 type Fs<'a> = FilesystemReader<'a>;
 
 fn open(data: &[u8]) -> Result<Fs<'_>> {
-    if data.len() < 12 || &data[8..11] != b"AI\x02" {
+    open_reader(data, BufReader::new(Cursor::new(data)))
+}
+
+/// `prefix` is the start of the file (enough to cover the ELF part); `reader` reads the whole file.
+fn open_reader<'a>(prefix: &[u8], reader: impl backhand::BufReadSeek + 'a) -> Result<Fs<'a>> {
+    if prefix.len() < 12 || &prefix[8..11] != b"AI\x02" {
         return Err(Error::Format("not an AppImage type 2".into()));
     }
-    let off = elf::end(data)?;
-    if data.get(off as usize..off as usize + 4) != Some(b"hsqs") {
+    let off = elf::end(prefix)?;
+    if prefix.get(off as usize..off as usize + 4) != Some(b"hsqs") {
         return Err(Error::Format("no squashfs after ELF".into()));
     }
-    FilesystemReader::from_reader_with_offset(BufReader::new(Cursor::new(data)), off)
-        .map_err(|e| Error::Format(format!("squashfs: {e}")))
+    FilesystemReader::from_reader_with_offset(reader, off).map_err(|e| Error::Format(format!("squashfs: {e}")))
+}
+
+/// What we can learn about an AppImage on disk without loading all of it into memory.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    pub name: String,
+    pub version: Option<String>,
+    pub update_info: Option<String>,
+}
+
+/// Cheap magic check: ELF + `AI\x02` at offset 8.
+pub fn is_appimage(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut b = [0u8; 12];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)).is_ok() && &b[..4] == b"\x7fELF" && &b[8..11] == b"AI\x02"
+}
+
+pub fn probe(path: &Path) -> Result<Probe> {
+    use std::io::Read as _;
+    let f = std::fs::File::open(path)?;
+    let mut prefix = Vec::new();
+    f.try_clone()?.take(8 << 20).read_to_end(&mut prefix)?;
+    let fs = open_reader(&prefix, BufReader::new(f))?;
+    let (rel, text) = top_level_desktop(&fs).ok_or_else(|| Error::Format("no .desktop in AppImage".into()))?;
+    Ok(Probe {
+        name: desktop::name(&text).unwrap_or_else(|| rel.trim_end_matches(".desktop").to_string()),
+        version: value(&text, "X-AppImage-Version").map(str::to_string),
+        update_info: update_info(&prefix),
+    })
 }
 
 fn node<'a, 'b>(fs: &'a Fs<'b>, path: &str) -> Option<&'a Node<SquashfsFileReader>> {
