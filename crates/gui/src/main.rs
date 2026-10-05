@@ -7,6 +7,8 @@ use ustan_core::{dirs::Dirs, fetch, manifest::Manifest};
 const APP_ID: &str = "io.github.tarilka0gg.Ustan";
 
 fn main() -> glib::ExitCode {
+    // Without a session bus GTK falls back to the program name for the Wayland app-id; keep it identical.
+    glib::set_prgname(Some(APP_ID));
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_activate(manager_window);
     app.connect_open(|app, files, _| {
@@ -24,6 +26,8 @@ struct Prepared {
     path: PathBuf,
     info: Info,
     downloaded: bool,
+    /// Set when this app is already installed.
+    existing: Option<Manifest>,
 }
 
 fn prepare(src: &str) -> Result<Prepared, String> {
@@ -35,16 +39,33 @@ fn prepare(src: &str) -> Result<Prepared, String> {
     };
     let b = backend::pick(&path).ok_or("Цей тип файлу не підтримується")?;
     let info = b.inspect(&path).map_err(|e| e.to_string())?;
-    Ok(Prepared { path, info, downloaded })
+    let existing = Manifest::load(&dirs.state, &info.id).ok();
+    Ok(Prepared { path, info, downloaded, existing })
 }
 
-fn run_install(p: &Prepared, installer: bool) -> Result<String, String> {
-    let b = backend::pick(&p.path).ok_or("Цей тип файлу не підтримується")?;
-    let m = b.install(&p.path, &Dirs::from_env(), &Opts { installer }).map_err(|e| e.to_string())?;
+fn cleanup(p: &Prepared) {
     if p.downloaded {
         let _ = std::fs::remove_file(&p.path);
     }
+}
+
+/// Install; with `replace` the existing copy is removed first (reinstall).
+fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, String> {
+    let dirs = Dirs::from_env();
+    if let (true, Some(old)) = (replace, &p.existing) {
+        old.uninstall(&dirs.state).map_err(|e| e.to_string())?;
+    }
+    let b = backend::pick(&p.path).ok_or("Цей тип файлу не підтримується")?;
+    let m = b.install(&p.path, &dirs, &Opts { installer }).map_err(|e| e.to_string())?;
+    cleanup(p);
     Ok(m.name)
+}
+
+fn run_remove(p: &Prepared) -> Result<String, String> {
+    let m = p.existing.as_ref().ok_or("Програма не встановлена")?;
+    m.uninstall(&Dirs::from_env().state).map_err(|e| e.to_string())?;
+    cleanup(p);
+    Ok(m.name.clone())
 }
 
 fn spawn<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> impl std::future::Future<Output = T> {
@@ -64,10 +85,6 @@ fn spinner_page(title: &str, desc: &str) -> adw::StatusPage {
     p
 }
 
-fn pill(label: &str, class: &str) -> gtk::Button {
-    gtk::Button::builder().label(label).css_classes(["pill", class]).halign(gtk::Align::Center).build()
-}
-
 fn show_icon(sp: &adw::StatusPage, info: &Info) {
     if let Some(i) = &info.icon {
         let f = std::env::temp_dir().join(format!("ustan-icon-{}.{}", std::process::id(), i.ext));
@@ -81,17 +98,73 @@ fn show_icon(sp: &adw::StatusPage, info: &Info) {
     sp.set_icon_name(Some("package-x-generic"));
 }
 
+/// Bottom action bar: secondary actions on the left, the main one on the right.
+struct Bar {
+    root: gtk::ActionBar,
+    cancel: gtk::Button,
+    remove: gtk::Button,
+    main: gtk::Button,
+    close: gtk::Button,
+}
+
+impl Bar {
+    fn new() -> Self {
+        let btn = |label: &str, class: &str| gtk::Button::builder().label(label).css_classes([class]).margin_top(6).margin_bottom(6).build();
+        let root = gtk::ActionBar::new();
+        let cancel = btn("Скасувати", "flat");
+        let remove = btn("Видалити", "destructive-action");
+        let main = btn("Встановити", "suggested-action");
+        let close = btn("Готово", "suggested-action");
+        root.pack_start(&cancel);
+        root.pack_start(&remove);
+        root.pack_end(&main);
+        root.pack_end(&close);
+        Bar { root, cancel, remove, main, close }
+    }
+
+    fn show_ready(&self, has_existing: bool) {
+        self.root.set_visible(true);
+        self.cancel.set_visible(true);
+        self.remove.set_visible(has_existing);
+        self.main.set_visible(true);
+        self.close.set_visible(false);
+    }
+
+    fn show_busy(&self) {
+        self.root.set_visible(false);
+    }
+
+    fn show_end(&self, label: &str, ok: bool) {
+        self.root.set_visible(true);
+        for b in [&self.cancel, &self.remove, &self.main] {
+            b.set_visible(false);
+        }
+        self.close.set_label(label);
+        self.close.set_css_classes(&[if ok { "suggested-action" } else { "flat" }]);
+        self.close.set_visible(true);
+    }
+}
+
 fn install_window(app: &adw::Application, src: String) {
     let win = adw::ApplicationWindow::builder().application(app).default_width(900).default_height(720).title("Встановлення").build();
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
+    let bar = std::rc::Rc::new(Bar::new());
+    bar.root.set_visible(false);
+    view.add_bottom_bar(&bar.root);
     let stack = gtk::Stack::new();
     view.set_content(Some(&stack));
     win.set_content(Some(&view));
     stack.add_named(&spinner_page("Читаю пакет…", &src), Some("loading"));
     win.present();
 
-    let win2 = win.clone();
+    let w = win.clone();
+    bar.cancel.connect_clicked({
+        let w = w.clone();
+        move |_| w.close()
+    });
+    bar.close.connect_clicked(move |_| w.close());
+
     glib::spawn_future_local(async move {
         let src2 = src.clone();
         match spawn(move || prepare(&src2)).await {
@@ -100,63 +173,75 @@ fn install_window(app: &adw::Application, src: String) {
                 p.set_icon_name(Some("dialog-error-symbolic"));
                 stack.add_named(&p, Some("end"));
                 stack.set_visible_child_name("end");
+                bar.show_end("Закрити", false);
             }
             Ok(prep) => {
                 let prep = std::sync::Arc::new(prep);
-                let ready = page(&prep.info.name, &describe(&prep.info));
+                let existing = prep.existing.is_some();
+                let ready = match &prep.existing {
+                    Some(old) => {
+                        let new_v = prep.info.version.as_deref().unwrap_or("—");
+                        let old_v = old.version.as_deref().unwrap_or("—");
+                        page(&prep.info.name, &format!("Уже встановлено · {old_v}\nУ файлі · {new_v}"))
+                    }
+                    None => page(&prep.info.name, &describe(&prep.info)),
+                };
                 show_icon(&ready, &prep.info);
-                let col = gtk::Box::new(gtk::Orientation::Vertical, 12);
+
                 let installer = adw::SwitchRow::builder().title("Це програма-установник").subtitle("Запустити через Wine і створити ярлики").build();
-                let is_exe = prep.info.kind == "exe";
-                if is_exe {
+                if prep.info.kind == "exe" {
                     let g = adw::PreferencesGroup::new();
                     g.add(&installer);
-                    col.append(&g);
+                    let clamp = adw::Clamp::builder().maximum_size(380).child(&g).build();
+                    ready.set_child(Some(&clamp));
                 }
-                let go = pill("Встановити", "suggested-action");
-                let cancel = pill("Скасувати", "flat");
-                col.append(&go);
-                col.append(&cancel);
-                ready.set_child(Some(&col));
                 stack.add_named(&ready, Some("ready"));
-                stack.add_named(&spinner_page("Встановлюю…", &prep.info.name), Some("busy"));
+                stack.add_named(&spinner_page("Зачекай…", &prep.info.name), Some("busy"));
                 stack.set_visible_child_name("ready");
+                bar.main.set_label(if existing { "Перевстановити" } else { "Встановити" });
+                bar.show_ready(existing);
 
-                let w = win2.clone();
-                cancel.connect_clicked(move |_| w.close());
-                let (stack, prep2) = (stack.clone(), prep.clone());
-                go.connect_clicked(move |_| {
-                    stack.set_visible_child_name("busy");
-                    let (stack, prep, inst) = (stack.clone(), prep2.clone(), installer.is_active());
-                    glib::spawn_future_local(async move {
-                        let r = spawn({
-                            let prep = prep.clone();
-                            move || run_install(&prep, inst)
-                        })
-                        .await;
-                        let (end, close) = match r {
-                            Ok(name) => {
-                                let p = page("Встановлено", &name);
-                                p.set_icon_name(Some("emblem-ok-symbolic"));
-                                (p, pill("Готово", "suggested-action"))
-                            }
-                            Err(e) => {
-                                let p = page("Не вдалося встановити", &e);
-                                p.set_icon_name(Some("dialog-error-symbolic"));
-                                (p, pill("Закрити", "flat"))
-                            }
-                        };
-                        end.set_child(Some(&close));
-                        let win = stack.root().and_downcast::<gtk::Window>();
-                        close.connect_clicked(move |_| {
-                            if let Some(w) = &win {
-                                w.close()
-                            }
+                // Run `job` off-thread, then show a result page.
+                let run = std::rc::Rc::new({
+                    let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
+                    move |job: Box<dyn FnOnce(&Prepared) -> Result<String, String> + Send>, ok_title: &'static str, err_title: &'static str| {
+                        stack.set_visible_child_name("busy");
+                        bar.show_busy();
+                        let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
+                        glib::spawn_future_local(async move {
+                            let r = spawn({
+                                let prep = prep.clone();
+                                move || job(&prep)
+                            })
+                            .await;
+                            let ok = r.is_ok();
+                            let end = match r {
+                                Ok(name) => {
+                                    let p = page(ok_title, &name);
+                                    p.set_icon_name(Some("emblem-ok-symbolic"));
+                                    p
+                                }
+                                Err(e) => {
+                                    let p = page(err_title, &e);
+                                    p.set_icon_name(Some("dialog-error-symbolic"));
+                                    p
+                                }
+                            };
+                            stack.add_named(&end, Some("end"));
+                            stack.set_visible_child_name("end");
+                            bar.show_end(if ok { "Готово" } else { "Закрити" }, ok);
                         });
-                        stack.add_named(&end, Some("end"));
-                        stack.set_visible_child_name("end");
-                    });
+                    }
                 });
+                {
+                    let run = run.clone();
+                    let installer = installer.clone();
+                    bar.main.connect_clicked(move |_| {
+                        let inst = installer.is_active();
+                        run(Box::new(move |p| run_install(p, inst, existing)), if existing { "Перевстановлено" } else { "Встановлено" }, "Не вдалося встановити");
+                    });
+                }
+                bar.remove.connect_clicked(move |_| run(Box::new(run_remove), "Видалено", "Не вдалося видалити"));
             }
         }
     });
@@ -185,18 +270,22 @@ fn manager_window(app: &adw::Application) {
     win.set_content(Some(&view));
     refresh(&bin, &toasts);
 
-    let (app, w) = (app.clone(), win.clone());
-    open.connect_clicked(move |_| {
-        let (app, w) = (app.clone(), w.clone());
-        glib::spawn_future_local(async move {
-            if let Ok(f) = gtk::FileDialog::new().open_future(Some(&w)).await {
-                if let Some(p) = f.path() {
-                    install_window(&app, p.display().to_string());
-                }
-            }
-        });
-    });
+    let (a2, w2) = (app.clone(), win.clone());
+    open.connect_clicked(move |_| pick_file(&a2, &w2));
     win.present();
+    // Launched without a file: go straight to the file chooser; cancelling leaves the manager.
+    pick_file(app, &win);
+}
+
+fn pick_file(app: &adw::Application, parent: &adw::ApplicationWindow) {
+    let (app, parent) = (app.clone(), parent.clone());
+    glib::spawn_future_local(async move {
+        if let Ok(f) = gtk::FileDialog::new().open_future(Some(&parent)).await {
+            if let Some(p) = f.path() {
+                install_window(&app, p.display().to_string());
+            }
+        }
+    });
 }
 
 fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay) {
