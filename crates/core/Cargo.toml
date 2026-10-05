@@ -13,7 +13,7 @@ tar = "0.4"
 flate2 = "1"
 lzma-rs = "0.3"
 ruzstd = "0.8"
-backhand = "0.25.5"
+backhand = { version = "0.25.5", features = ["lzo"] }
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["ico", "png"] }

@@ -2,6 +2,7 @@
 //! launchers that set up the `SNAP*` environment. Snaps that rely on other snaps (a `base`
 //! or content runtimes such as gnome-*) can only run if they bundle what they need.
 use super::tree::{dest, install_tree, remove_existing, safe_rel, Spec};
+use std::path::PathBuf;
 use super::{slug, Backend, Icon, Info, Opts};
 use crate::{dirs::Dirs, manifest::Manifest, Error, Result};
 use backhand::{FilesystemReader, InnerNode};
@@ -36,15 +37,41 @@ struct App {
     command: String,
     chain: Vec<String>,
     daemon: bool,
+    env: Vec<(String, String)>,
+}
+
+/// A content-interface plug that wants a directory from another snap (snapd would bind-mount it).
+#[derive(Debug, Clone)]
+struct Plug {
+    name: String,
+    target: String,
+    provider: String,
+    slot: String,
 }
 
 #[derive(Debug)]
 struct Meta {
     name: String,
     version: String,
+    base: Option<String>,
     apps: Vec<App>,
     /// Other snaps this one expects to be connected (content interface default-providers).
     providers: Vec<String>,
+    plugs: Vec<Plug>,
+    /// snap.yaml `environment:`; snapd exports it to every app.
+    env: Vec<(String, String)>,
+}
+
+fn env_of(v: Option<&serde_yaml::Value>) -> Vec<(String, String)> {
+    let Some(m) = v.and_then(|v| v.as_mapping()) else { return vec![] };
+    m.iter()
+        .filter_map(|(k, v)| {
+            let val = v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|i| i.to_string())).or_else(|| v.as_bool().map(|b| b.to_string()))?;
+            Some((k.as_str()?.to_string(), val))
+        })
+        // the value ends up inside a double-quoted shell string: refuse anything that could break out
+        .filter(|(k, v)| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !v.contains('`') && !v.contains("$(") && !v.contains('"') && !v.contains('\\'))
+        .collect()
 }
 
 fn parse_yaml(text: &str) -> Result<Meta> {
@@ -60,17 +87,25 @@ fn parse_yaml(text: &str) -> Result<Meta> {
                 .and_then(|c| c.as_sequence())
                 .map(|c| c.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
-            apps.push(App { name: an.to_string(), command: cmd.to_string(), chain, daemon: v.get("daemon").is_some() });
+            apps.push(App { name: an.to_string(), command: cmd.to_string(), chain, daemon: v.get("daemon").is_some(), env: env_of(v.get("environment")) });
         }
     }
-    let mut providers: Vec<String> = y
-        .get("plugs")
-        .and_then(|p| p.as_mapping())
-        .map(|m| m.values().filter_map(|v| v.get("default-provider").and_then(|d| d.as_str())).map(|d| d.split(':').next().unwrap_or(d).to_string()).collect())
-        .unwrap_or_default();
+    let mut plugs = Vec::new();
+    if let Some(m) = y.get("plugs").and_then(|p| p.as_mapping()) {
+        for (k, v) in m {
+            let (Some(pn), Some(target), Some(dp)) = (k.as_str(), v.get("target").and_then(|t| t.as_str()), v.get("default-provider").and_then(|d| d.as_str())) else { continue };
+            if v.get("interface").and_then(|i| i.as_str()) != Some("content") {
+                continue;
+            }
+            // `snap` or `snap:slot`; without a slot name the slot is called like the plug.
+            let (provider, slot) = dp.split_once(':').map_or((dp, pn), |(a, b)| (a, b));
+            plugs.push(Plug { name: pn.to_string(), target: target.to_string(), provider: provider.to_string(), slot: slot.to_string() });
+        }
+    }
+    let mut providers: Vec<String> = plugs.iter().map(|p| p.provider.clone()).collect();
     providers.sort();
     providers.dedup();
-    Ok(Meta { name, version: s("version").unwrap_or_default(), apps, providers })
+    Ok(Meta { name, version: s("version").unwrap_or_default(), base: s("base"), apps, providers, plugs, env: env_of(y.get("environment")) })
 }
 
 fn meta(fs: &Fs) -> Result<Meta> {
@@ -86,23 +121,47 @@ fn absolutize(c: &str) -> String {
     }
 }
 
-fn wrapper(root: &Path, m: &Meta, app: &App) -> String {
+fn wrapper(root: &Path, m: &Meta, app: &App, sandbox: Option<&Path>) -> String {
     let cmd = app.chain.iter().map(|c| absolutize(c)).chain([absolutize(&app.command)]).collect::<Vec<_>>().join(" ");
     let n = &m.name;
+    let env: String = m.env.iter().chain(&app.env).map(|(k, v)| format!("export {k}=\"{v}\"\n")).collect();
+    // Snaps that bring their own runtime also bring its glibc: it only works together with the base
+    // snap's ld.so and tools, which snapd provides through a mount namespace. Emulate that with bwrap.
+    let prelude = sandbox
+        .map(|b| {
+            format!(
+                r#"if [ -z "$USTAN_SANDBOX" ]; then
+  R="{base}"; UIDN=$(id -u)
+  exec bwrap --unshare-pid --die-with-parent \
+    --tmpfs / --ro-bind "$R/usr" /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/sbin /sbin \
+    --ro-bind "$R/etc" /etc --dev /dev --dev-bind-try /dev/dri /dev/dri --proc /proc --ro-bind-try /sys /sys \
+    --tmpfs /tmp --bind-try /tmp/.X11-unix /tmp/.X11-unix \
+    --bind "$HOME" "$HOME" --bind-try "/run/user/$UIDN" "/run/user/$UIDN" \
+    --ro-bind-try /usr/share/fonts /usr/share/fonts \
+    --ro-bind-try /etc/resolv.conf /run/systemd/resolve/stub-resolv.conf --ro-bind-try /etc/machine-id /etc/machine-id \
+    --setenv USTAN_SANDBOX 1 /bin/sh "$0" "$@"
+fi
+"#,
+                base = b.display()
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"#!/bin/sh
 # generated by ustan
-SNAP="{root}"
+{prelude}SNAP="{root}"
 export SNAP SNAP_NAME="{n}" SNAP_INSTANCE_NAME="{n}" SNAP_VERSION="{v}" SNAP_ARCH=amd64 SNAP_REVISION=x1
 export SNAP_DATA="$HOME/snap/{n}/current" SNAP_COMMON="$HOME/snap/{n}/common"
 export SNAP_USER_DATA="$HOME/snap/{n}/current" SNAP_USER_COMMON="$HOME/snap/{n}/common"
+export SNAP_REAL_HOME="$HOME" SNAP_LIBRARY_PATH=/var/lib/snapd/lib/gl
 mkdir -p "$SNAP_USER_DATA" "$SNAP_USER_COMMON"
 export LD_LIBRARY_PATH="$SNAP/lib:$SNAP/usr/lib:$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
-export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin${{PATH:+:$PATH}}"
-exec {cmd} "$@"
+export PATH="$SNAP/.ustan-run/bin:$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin${{PATH:+:$PATH}}"
+{env}exec {cmd} "$@"
 "#,
         root = root.display(),
         v = m.version,
+        prelude = prelude,
     )
 }
 
@@ -135,9 +194,100 @@ fn extract(fs: &Fs, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Directories a provider snap offers for `slot`, as existing paths inside its root. `read` may sit
+/// directly on the slot or under `source`; `/` and `$SNAP` mean the snap root, `$SNAP_DATA/..` (kernel
+/// drivers, only present under snapd) is dropped.
+fn slot_reads(provider_root: &Path, slot: &str) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(provider_root.join("meta/snap.yaml")) else { return vec![] };
+    let Ok(y) = serde_yaml::from_str::<serde_yaml::Value>(&text) else { return vec![] };
+    let Some(sl) = y.get("slots").and_then(|s| s.get(slot)) else { return vec![] };
+    let list = sl.get("read").or_else(|| sl.get("source").and_then(|s| s.get("read"))).and_then(|r| r.as_sequence());
+    list.map(|r| {
+        r.iter()
+            .filter_map(|p| p.as_str())
+            .filter(|p| !p.contains("SNAP_DATA") && !p.contains("SNAP_COMMON"))
+            .map(|p| {
+                let rel = p.trim_start_matches("${SNAP}").trim_start_matches("$SNAP").trim_start_matches('/');
+                if rel.is_empty() { provider_root.to_path_buf() } else { provider_root.join(rel) }
+            })
+            .filter(|p| p.exists())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Download URL of the stable amd64 revision of a snap from the store.
+fn store_url(name: &str) -> Result<String> {
+    let resp = ureq::get(&format!("https://api.snapcraft.io/v2/snaps/info/{name}?fields=download"))
+        .set("Snap-Device-Series", "16")
+        .call()
+        .map_err(|e| Error::Format(format!("store: {e}")))?;
+    let j: serde_json::Value = resp.into_json().map_err(|e| Error::Format(format!("store json: {e}")))?;
+    let maps = j["channel-map"].as_array().ok_or_else(|| Error::Format(format!("snap `{name}` not found in the store")))?;
+    let pick = maps
+        .iter()
+        .find(|c| c["channel"]["architecture"] == "amd64" && c["channel"]["name"] == "stable")
+        .or_else(|| maps.iter().find(|c| c["channel"]["architecture"] == "amd64"))
+        .ok_or_else(|| Error::Format(format!("no amd64 build of `{name}`")))?;
+    pick["download"]["url"].as_str().map(str::to_string).ok_or_else(|| Error::Format("store gave no download url".into()))
+}
+
+/// The provider snap, installed under ustan like any other app (downloaded first if needed).
+fn ensure_provider(name: &str, dirs: &Dirs, opts: &Opts) -> Result<PathBuf> {
+    let root = dirs.opt.join(slug(name));
+    if root.join("meta/snap.yaml").exists() {
+        return Ok(root);
+    }
+    eprintln!("завантажую runtime-снап `{name}` (може бути кілька сотень МБ)…");
+    let file = crate::fetch::download(&store_url(name)?, &dirs.state.join("cache"), None)?;
+    let file = {
+        // the store URL has no extension; give it one so the snap backend recognises it
+        let renamed = file.with_file_name(format!("{}.snap", slug(name)));
+        std::fs::rename(&file, &renamed)?;
+        renamed
+    };
+    let res = Snap.install(&file, dirs, opts);
+    let _ = std::fs::remove_file(&file);
+    res?;
+    Ok(root)
+}
+
+/// Emulate snapd's content bind-mounts with symlinks: `target` -> directory of the provider.
+fn link_plug(root: &Path, plug: &Plug, dirs: &Dirs, opts: &Opts) -> Result<()> {
+    let provider = ensure_provider(&plug.provider, dirs, opts)?;
+    let reads = slot_reads(&provider, &plug.slot);
+    if reads.is_empty() {
+        return Ok(()); // the provider offers nothing for this slot
+    }
+    let rel = plug.target.trim_start_matches("$SNAP").trim_start_matches("${SNAP}");
+    let target = root.join(safe_rel(rel).ok_or_else(|| Error::Format(format!("unsafe plug target {}", plug.target)))?);
+    if let Some(p) = target.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    remove_existing(&target);
+    // The snap root (or a single dir) *is* the target; several dirs go under target/<name>.
+    if reads.len() == 1 || reads.iter().any(|r| r == &provider) {
+        let src = reads.iter().find(|r| *r == &provider).unwrap_or(&reads[0]);
+        std::os::unix::fs::symlink(src, &target)?;
+    } else {
+        // several source dirs: snapd mounts each under target/<name>
+        std::fs::create_dir_all(&target)?;
+        for r in &reads {
+            if let Some(n) = r.file_name() {
+                std::os::unix::fs::symlink(r, target.join(n))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(cmd)).find(|p| p.is_file())
+}
+
 fn warning(m: &Meta) -> Option<String> {
     (!m.providers.is_empty())
-        .then(|| format!("залежить від інших snap-ів ({}), яких без snapd немає: програма може не запуститися", m.providers.join(", ")))
+        .then(|| format!("потребує runtime-снапи ({}): ustan завантажить їх сам, якщо їх ще немає (можуть бути сотні МБ). Запускається в пісочниці bubblewrap, без snapd робота не гарантована", m.providers.join(", ")))
 }
 
 fn icon_of(fs: &Fs) -> Option<Icon> {
@@ -202,13 +352,35 @@ impl Backend for Snap {
                 for f in files.drain(1..) {
                     let _ = std::fs::remove_file(f);
                 }
+                for plug in &m.plugs {
+                    link_plug(root, plug, dirs, opts)?;
+                }
+                let sandbox = if m.providers.is_empty() {
+                    None
+                } else {
+                    if which("bwrap").is_none() {
+                        return Err(Error::Format("для цього snap потрібен bubblewrap (команда `bwrap`), його немає в PATH".into()));
+                    }
+                    match m.base.as_deref().filter(|b| *b != "bare") {
+                        Some(b) => Some(ensure_provider(b, dirs, opts)?),
+                        None => None,
+                    }
+                };
                 let run = root.join(".ustan-run");
-                std::fs::create_dir_all(&run)?;
+                std::fs::create_dir_all(run.join("bin"))?;
+                // snapd isn't here: answer `snapctl is-connected <plug>` ourselves for the plugs we linked.
+                let connected: Vec<&str> = m.plugs.iter().map(|p| p.name.as_str()).collect();
+                let shim = run.join("bin/snapctl");
+                std::fs::write(
+                    &shim,
+                    format!("#!/bin/sh\n# generated by ustan: stand-in for snapd's snapctl\ncase \"$1\" in\n  is-connected) case \"$2\" in {}) exit 0;; *) exit 1;; esac;;\n  *) exit 0;;\nesac\n", if connected.is_empty() { "__none__".to_string() } else { connected.join("|") }),
+                )?;
+                std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))?;
                 std::fs::create_dir_all(&dirs.apps)?;
                 let bin = dirs.opt.parent().unwrap_or(&dirs.opt).join("bin");
                 for app in m.apps.iter().filter(|a| !a.daemon) {
                     let w = run.join(&app.name);
-                    std::fs::write(&w, wrapper(root, &m, app))?;
+                    std::fs::write(&w, wrapper(root, &m, app, sandbox.as_deref()))?;
                     std::fs::set_permissions(&w, std::fs::Permissions::from_mode(0o755))?;
 
                     if let Ok(text) = std::fs::read_to_string(root.join("meta/gui").join(format!("{}.desktop", app.name))) {
