@@ -44,6 +44,11 @@ export fn ustan_lnk_parse(
     return lnk.parse(data[0..len], target[0..target_cap], args[0..args_cap], target_len, args_len);
 }
 
+/// Offset/length of a named ELF64-LE section. 0 on success.
+export fn ustan_elf_section(data: [*]const u8, len: usize, name: [*]const u8, name_len: usize, out_off: *u64, out_len: *u64) i32 {
+    return elf.section(data[0..len], name[0..name_len], out_off, out_len);
+}
+
 test {
     _ = lnk;
     _ = pe;

@@ -123,7 +123,7 @@ impl Backend for Deb {
             }
             return Err(e);
         }
-        let m = Manifest { id, name: c.package, version: c.version, kind: "deb".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![] };
+        let m = Manifest { id, name: c.package, version: c.version, kind: "deb".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
         m.save(&dirs.state)?;
         Ok(m)
     }

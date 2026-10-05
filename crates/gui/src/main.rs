@@ -2,7 +2,7 @@ use adw::prelude::*;
 use adw::{gdk, gio, glib, gtk};
 use std::path::PathBuf;
 use ustan_core::backend::{self, Info, Opts};
-use ustan_core::{dirs::Dirs, fetch, manifest::Manifest};
+use ustan_core::{dirs::Dirs, fetch, manifest::Manifest, update};
 
 const APP_ID: &str = "io.github.tarilka0gg.Ustan";
 
@@ -28,19 +28,22 @@ struct Prepared {
     downloaded: bool,
     /// Set when this app is already installed.
     existing: Option<Manifest>,
+    /// Source URL and its HTTP validator, when downloaded.
+    origin: Option<(String, Option<String>)>,
 }
 
 fn prepare(src: &str) -> Result<Prepared, String> {
     let dirs = Dirs::from_env();
-    let (path, downloaded) = if fetch::is_url(src) {
-        (fetch::download(src, &dirs.state.join("cache"), None).map_err(|e| e.to_string())?, true)
+    let (path, downloaded, origin) = if fetch::is_url(src) {
+        let (p, etag) = fetch::download_with_validator(src, &dirs.state.join("cache"), None).map_err(|e| e.to_string())?;
+        (p, true, Some((src.to_string(), etag)))
     } else {
-        (PathBuf::from(src), false)
+        (PathBuf::from(src), false, None)
     };
     let b = backend::pick(&path).ok_or("Цей тип файлу не підтримується")?;
     let info = b.inspect(&path).map_err(|e| e.to_string())?;
     let existing = Manifest::load(&dirs.state, &info.id).ok();
-    Ok(Prepared { path, info, downloaded, existing })
+    Ok(Prepared { path, info, downloaded, existing, origin })
 }
 
 fn cleanup(p: &Prepared) {
@@ -56,7 +59,12 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, S
         old.uninstall(&dirs.state).map_err(|e| e.to_string())?;
     }
     let b = backend::pick(&p.path).ok_or("Цей тип файлу не підтримується")?;
-    let m = b.install(&p.path, &dirs, &Opts { installer }).map_err(|e| e.to_string())?;
+    let mut m = b.install(&p.path, &dirs, &Opts { installer }).map_err(|e| e.to_string())?;
+    if let Some((url, etag)) = &p.origin {
+        m.url = Some(url.clone());
+        m.etag = etag.clone();
+        m.save(&dirs.state).map_err(|e| e.to_string())?;
+    }
     cleanup(p);
     Ok(m.name)
 }
@@ -282,14 +290,33 @@ fn manager_window(app: &adw::Application) {
     let header = adw::HeaderBar::new();
     let open = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text("Встановити з файлу…").build();
     header.pack_start(&open);
+    let recheck = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text("Перевірити оновлення").build();
+    header.pack_end(&recheck);
     view.add_top_bar(&header);
     let bin = adw::Bin::new();
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&gtk::ScrolledWindow::builder().child(&bin).hscrollbar_policy(gtk::PolicyType::Never).build()));
     view.set_content(Some(&toasts));
     win.set_content(Some(&view));
-    refresh(&bin, &toasts);
+    refresh(&bin, &toasts, true, true);
+    // Installs/removals happen in other windows: re-read the list whenever this one is focused again.
+    win.connect_is_active_notify({
+        let (bin, toasts) = (bin.clone(), toasts.clone());
+        move |w| {
+            if w.is_active() {
+                refresh(&bin, &toasts, false, false);
+            }
+        }
+    });
 
+    recheck.connect_clicked({
+        let (bin, toasts) = (bin.clone(), toasts.clone());
+        move |_| {
+            UPDATES.with(|u| u.borrow_mut().clear());
+            toasts.add_toast(adw::Toast::new("Перевіряю оновлення…"));
+            refresh(&bin, &toasts, false, true);
+        }
+    });
     let (a2, w2) = (app.clone(), win.clone());
     open.connect_clicked(move |_| pick_file(&a2, &w2));
     win.present();
@@ -308,17 +335,65 @@ fn pick_file(app: &adw::Application, parent: &adw::ApplicationWindow) {
     });
 }
 
-fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay) {
+thread_local! {
+    /// id -> label of the update found by the last check (kept across list rebuilds, so focus
+    /// changes don't re-query GitHub and don't lose the badges).
+    static UPDATES: std::cell::RefCell<std::collections::HashMap<String, String>> = Default::default();
+}
+
+fn add_update_button(actions: &gtk::Box, row: &adw::ActionRow, m: &Manifest, label: &str, bin: &adw::Bin, toasts: &adw::ToastOverlay) {
+    row.set_subtitle(&format!("{} · {} · є оновлення: {label}", m.kind, m.version.as_deref().unwrap_or("—")));
+    let upd = gtk::Button::builder().label("Оновити").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+    actions.prepend(&upd);
+    let (m, bin, toasts) = (m.clone(), bin.clone(), toasts.clone());
+    upd.connect_clicked(move |b| {
+        b.set_sensitive(false);
+        b.set_label("Оновлюю…");
+        let (m, bin, toasts) = (m.clone(), bin.clone(), toasts.clone());
+        glib::spawn_future_local(async move {
+            let m2 = m.clone();
+            let r = spawn(move || update::apply(&m2, &Dirs::from_env()).map_err(|e| e.to_string())).await;
+            toasts.add_toast(adw::Toast::new(&match &r {
+                Ok(_) => format!("{} оновлено", m.name),
+                Err(e) => format!("Не вдалося оновити: {e}"),
+            }));
+            if r.is_ok() {
+                UPDATES.with(|u| u.borrow_mut().remove(&m.id));
+            }
+            refresh(&bin, &toasts, false, false);
+        });
+    });
+}
+
+/// Rebuild the list. `check` queries the update sources in the background.
+fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: bool) {
     let state = Dirs::from_env().state;
     let apps = Manifest::list(&state).unwrap_or_default();
+    UPDATES.with(|u| u.borrow_mut().retain(|id, _| apps.iter().any(|m| &m.id == id)));
     let group = adw::PreferencesGroup::builder().title("Встановлені програми").margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
     if apps.is_empty() {
         group.set_description(Some("Поки нічого. Відкрий .deb, .AppImage, .exe чи .flatpakref подвійним кліком або кнопкою зверху."));
     }
     for (i, m) in apps.into_iter().enumerate() {
         let row = adw::ActionRow::builder().title(&m.name).subtitle(format!("{} · {}", m.kind, m.version.as_deref().unwrap_or("—"))).build();
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
-        row.add_suffix(&del);
+        actions.append(&del);
+        row.add_suffix(&actions);
+
+        if let Some(label) = UPDATES.with(|u| u.borrow().get(&m.id).cloned()) {
+            add_update_button(&actions, &row, &m, &label, bin, toasts);
+        } else if check {
+            let (actions, row, m, bin, toasts) = (actions.clone(), row.clone(), m.clone(), bin.clone(), toasts.clone());
+            glib::spawn_future_local(async move {
+                let m2 = m.clone();
+                if let Ok(update::Status::Available(label)) = spawn(move || update::check(&m2)).await {
+                    UPDATES.with(|u| u.borrow_mut().insert(m.id.clone(), label.clone()));
+                    add_update_button(&actions, &row, &m, &label, &bin, &toasts);
+                }
+            });
+        }
+
         let (bin, toasts, id, row2) = (bin.clone(), toasts.clone(), m.id.clone(), row.clone());
         del.connect_clicked(move |b| {
             b.set_sensitive(false);
@@ -334,10 +409,12 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay) {
                     Ok(()) => format!("{id} видалено"),
                     Err(e) => format!("Помилка: {e}"),
                 }));
-                fade(&row, 1.0, 0.0, 220, 0, move || refresh(&bin, &toasts));
+                fade(&row, 1.0, 0.0, 220, 0, move || refresh(&bin, &toasts, false, false));
             });
         });
-        fade(&row, 0.0, 1.0, 380, 60 * i as u32, || {});
+        if animate {
+            fade(&row, 0.0, 1.0, 380, 60 * i as u32, || {});
+        }
         group.add(&row);
     }
     bin.set_child(Some(&group));

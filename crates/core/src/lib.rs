@@ -7,6 +7,7 @@ pub mod fetch;
 pub mod lnk;
 pub mod manifest;
 pub mod pe;
+pub mod update;
 pub mod register;
 
 #[derive(Debug, thiserror::Error)]

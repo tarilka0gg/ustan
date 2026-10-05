@@ -92,7 +92,7 @@ impl Backend for Exe {
             }
             return Err(e);
         }
-        let m = Manifest { id, name, version: None, kind: "exe".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![] };
+        let m = Manifest { id, name, version: None, kind: "exe".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
         m.save(&dirs.state)?;
         Ok(m)
     }
@@ -222,7 +222,7 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
             return Err(e);
         }
     }
-    let m = Manifest { id, name, version: None, kind: "exe-installer".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![] };
+    let m = Manifest { id, name, version: None, kind: "exe-installer".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
     m.save(&dirs.state)?;
     Ok(m)
 }

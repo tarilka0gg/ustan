@@ -1,0 +1,172 @@
+//! Update checks and in-place updates of installed apps.
+//!
+//! Sources, in order: Flatpak (asks flatpak), AppImage `.upd_info` pointing at GitHub Releases,
+//! and anything installed from a URL (HTTP validator changed = new file).
+use crate::{backend, dirs::Dirs, fetch, manifest::Manifest, Error, Result};
+use std::process::Command;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    UpToDate,
+    /// A newer version exists; the string is a short human label.
+    Available(String),
+    /// We have no way to know (no update info, no URL, offline...).
+    Unknown(String),
+}
+
+struct Release {
+    /// What identifies this release (tag, or asset timestamp for rolling tags).
+    marker: String,
+    url: String,
+}
+
+fn glob(pat: &str, s: &str) -> bool {
+    let parts: Vec<&str> = pat.split('*').collect();
+    if parts.len() == 1 {
+        return pat == s;
+    }
+    let mut rest = s;
+    for (i, p) in parts.iter().enumerate() {
+        if i == 0 {
+            match rest.strip_prefix(p) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(p);
+        } else {
+            match rest.find(p) {
+                Some(at) => rest = &rest[at + p.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+fn norm(v: &str) -> &str {
+    v.trim().trim_start_matches(['v', 'V'])
+}
+
+fn gh_release(info: &str) -> Result<(Release, bool)> {
+    let p: Vec<&str> = info.split('|').collect();
+    if p.len() < 5 || p[0] != "gh-releases-zsync" {
+        return Err(Error::Format(format!("unsupported update info: {info}")));
+    }
+    let (owner, repo, tag, pattern) = (p[1], p[2], p[3], p[4].trim_end_matches(".zsync"));
+    let latest = tag == "latest";
+    let url = if latest {
+        format!("https://api.github.com/repos/{owner}/{repo}/releases/latest")
+    } else {
+        format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}")
+    };
+    let resp = ureq::get(&url)
+        .set("User-Agent", "ustan")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| Error::Format(format!("github: {e}")))?;
+    let j: serde_json::Value = resp.into_json().map_err(|e| Error::Format(format!("github json: {e}")))?;
+    let asset = j["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["name"].as_str().is_some_and(|n| glob(pattern, n))))
+        .ok_or_else(|| Error::Format(format!("no release asset matches `{pattern}`")))?;
+    let marker = if latest { j["tag_name"].as_str() } else { asset["updated_at"].as_str() }
+        .ok_or_else(|| Error::Format("release has no marker".into()))?
+        .to_string();
+    let dl = asset["browser_download_url"].as_str().ok_or_else(|| Error::Format("asset has no url".into()))?.to_string();
+    Ok((Release { marker, url: dl }, latest))
+}
+
+fn flatpak_has_update(app: &str) -> Result<bool> {
+    let o = Command::new("flatpak")
+        .args(["remote-ls", "--user", "--updates", "--columns=application"])
+        .output()
+        .map_err(|e| Error::Format(format!("cannot run flatpak: {e}")))?;
+    Ok(String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == app))
+}
+
+pub fn check(m: &Manifest) -> Result<Status> {
+    if m.kind == "flatpak" {
+        return Ok(if flatpak_has_update(&m.name)? { Status::Available("нова версія".into()) } else { Status::UpToDate });
+    }
+    if let Some(info) = &m.update_info {
+        let (rel, latest) = gh_release(info)?;
+        return Ok(match (&m.remote_version, latest) {
+            (Some(seen), _) if *seen == rel.marker => Status::UpToDate,
+            (Some(_), _) => Status::Available(label(&rel.marker, latest)),
+            (None, true) => match &m.version {
+                Some(v) if norm(v) == norm(&rel.marker) => Status::UpToDate,
+                Some(_) => Status::Available(label(&rel.marker, true)),
+                None => Status::Unknown("невідома встановлена версія".into()),
+            },
+            (None, false) => Status::Unknown("немає бази для порівняння".into()),
+        });
+    }
+    if let Some(url) = &m.url {
+        let now = fetch::head_validator(url)?;
+        return Ok(match (&m.etag, now) {
+            (Some(old), Some(new)) if *old == new => Status::UpToDate,
+            (Some(_), Some(_)) => Status::Available("файл змінився".into()),
+            _ => Status::Unknown("сервер не повідомляє версію".into()),
+        });
+    }
+    Ok(Status::Unknown("джерело оновлень невідоме".into()))
+}
+
+fn label(marker: &str, is_tag: bool) -> String {
+    if is_tag { norm(marker).to_string() } else { "нова збірка".into() }
+}
+
+/// Replace the installed copy with a freshly downloaded file. The new file is inspected *before*
+/// the old copy is removed, so a bad download never destroys a working install.
+fn replace_from_file(m: &Manifest, file: &std::path::Path, dirs: &Dirs) -> Result<Manifest> {
+    let b = backend::pick(file).ok_or_else(|| Error::Format("downloaded file type is not supported".into()))?;
+    b.inspect(file)?;
+    m.uninstall(&dirs.state)?;
+    b.install(file, dirs, &backend::Opts::default())
+}
+
+pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
+    let cache = dirs.state.join("cache");
+    if m.kind == "flatpak" {
+        let st = Command::new("flatpak")
+            .args(["update", "--user", "-y", "--noninteractive", &m.name])
+            .status()
+            .map_err(|e| Error::Format(format!("cannot run flatpak: {e}")))?;
+        return if st.success() { Ok(m.clone()) } else { Err(Error::Format(format!("flatpak update failed: {st}"))) };
+    }
+    if let Some(info) = &m.update_info {
+        let (rel, _) = gh_release(info)?;
+        let file = fetch::download(&rel.url, &cache, None)?;
+        let res = replace_from_file(m, &file, dirs);
+        let _ = std::fs::remove_file(&file);
+        let mut new = res?;
+        new.remote_version = Some(rel.marker);
+        new.save(&dirs.state)?;
+        return Ok(new);
+    }
+    if let Some(url) = &m.url {
+        let (file, etag) = fetch::download_with_validator(url, &cache, None)?;
+        let res = replace_from_file(m, &file, dirs);
+        let _ = std::fs::remove_file(&file);
+        let mut new = res?;
+        new.url = Some(url.clone());
+        new.etag = etag;
+        new.save(&dirs.state)?;
+        return Ok(new);
+    }
+    Err(Error::Format("для цієї програми невідоме джерело оновлень".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob;
+
+    #[test]
+    fn globs() {
+        assert!(glob("App-*x86_64.AppImage", "App-1.2-x86_64.AppImage"));
+        assert!(!glob("App-*x86_64.AppImage", "Other-1.2-x86_64.AppImage"));
+        assert!(glob("exact", "exact"));
+        assert!(!glob("a*b", "a"));
+    }
+}

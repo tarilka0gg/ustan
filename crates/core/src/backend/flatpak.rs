@@ -93,6 +93,7 @@ impl Backend for Flatpak {
             source: Some(path.display().to_string()),
             files: vec![],
             uninstall_cmd: ["flatpak", "uninstall", "--user", "-y", "--noninteractive", &app].map(String::from).to_vec(),
+            ..Default::default()
         };
         m.save(&dirs.state)?;
         Ok(m)

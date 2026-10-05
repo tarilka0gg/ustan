@@ -15,11 +15,27 @@ fn file_name(url: &str) -> String {
     if n.is_empty() || n.starts_with('.') { "download".into() } else { n }
 }
 
+/// Validator of a remote file (ETag preferred, else Last-Modified): changes when the file changes.
+pub fn validator(resp: &ureq::Response) -> Option<String> {
+    resp.header("ETag").or_else(|| resp.header("Last-Modified")).map(str::to_string)
+}
+
+/// Current validator of `url` without downloading the body.
+pub fn head_validator(url: &str) -> Result<Option<String>> {
+    let resp = ureq::head(url).call().map_err(|e| Error::Format(format!("head: {e}")))?;
+    Ok(validator(&resp))
+}
+
 /// Download `url` into `cache`, returning the file path. Fails (and deletes the file) on hash mismatch.
 pub fn download(url: &str, cache: &Path, sha256: Option<&str>) -> Result<PathBuf> {
+    download_with_validator(url, cache, sha256).map(|(p, _)| p)
+}
+
+pub fn download_with_validator(url: &str, cache: &Path, sha256: Option<&str>) -> Result<(PathBuf, Option<String>)> {
     std::fs::create_dir_all(cache)?;
     let dst = cache.join(file_name(url));
     let resp = ureq::get(url).call().map_err(|e| Error::Format(format!("download: {e}")))?;
+    let etag = validator(&resp);
     let mut r = resp.into_reader();
     let mut f = std::fs::File::create(&dst)?;
     let mut h = Sha256::new();
@@ -39,7 +55,7 @@ pub fn download(url: &str, cache: &Path, sha256: Option<&str>) -> Result<PathBuf
             return Err(Error::Format(format!("sha256 mismatch: expected {want}, got {got}")));
         }
     }
-    Ok(dst)
+    Ok((dst, etag))
 }
 
 #[cfg(test)]

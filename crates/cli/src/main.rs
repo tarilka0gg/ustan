@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use ustan_core::{backend, fetch, register, dirs::Dirs, manifest::Manifest};
+use ustan_core::{backend, fetch, register, update, dirs::Dirs, manifest::Manifest};
 
 #[derive(Parser)]
 #[command(name = "ustan", about = "Windows-style app installer for Linux")]
@@ -34,6 +34,13 @@ enum Cmd {
     },
     /// Undo `register`
     Unregister,
+    /// Check for updates and install them (all apps, or just <id>)
+    Update {
+        id: Option<String>,
+        /// Only report, don't install
+        #[arg(long)]
+        check: bool,
+    },
     /// Remove an installed app
     Remove { id: String },
 }
@@ -48,16 +55,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{:#?}", b.inspect(&file)?);
         }
         Cmd::Install { source, sha256, installer } => {
+            let mut etag = None;
             let file = if fetch::is_url(&source) {
-                let f = fetch::download(&source, &dirs.state.join("cache"), sha256.as_deref())?;
+                let (f, e) = fetch::download_with_validator(&source, &dirs.state.join("cache"), sha256.as_deref())?;
                 eprintln!("downloaded {}", f.display());
+                etag = e;
                 f
             } else {
                 PathBuf::from(&source)
             };
             let b = backend::pick(&file).ok_or("unsupported package type")?;
-            let m = b.install(&file, &dirs, &backend::Opts { installer })?;
+            let mut m = b.install(&file, &dirs, &backend::Opts { installer })?;
             if fetch::is_url(&source) {
+                m.url = Some(source.clone());
+                m.etag = etag;
+                m.save(&dir)?;
                 let _ = std::fs::remove_file(&file); // installed copy lives in ~/.local/opt
             }
             println!("installed {} {}", m.id, m.version.as_deref().unwrap_or(""));
@@ -74,6 +86,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Unregister => {
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
             register::unregister(&home)?;
+        }
+        Cmd::Update { id, check } => {
+            let apps: Vec<Manifest> = match id {
+                Some(id) => vec![Manifest::load(&dir, &id)?],
+                None => Manifest::list(&dir)?,
+            };
+            for m in apps {
+                match update::check(&m) {
+                    Ok(update::Status::Available(v)) if check => println!("{}\tє оновлення ({v})", m.id),
+                    Ok(update::Status::Available(v)) => {
+                        println!("{}\tоновлюю ({v})…", m.id);
+                        match update::apply(&m, &dirs) {
+                            Ok(_) => println!("{}\tоновлено", m.id),
+                            Err(e) => println!("{}\tпомилка: {e}", m.id),
+                        }
+                    }
+                    Ok(update::Status::UpToDate) => println!("{}\tактуальна", m.id),
+                    Ok(update::Status::Unknown(why)) => println!("{}\t? {why}", m.id),
+                    Err(e) => println!("{}\tне вдалося перевірити: {e}", m.id),
+                }
+            }
         }
         Cmd::List => {
             for m in Manifest::list(&dir)? {

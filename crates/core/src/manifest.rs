@@ -3,7 +3,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
     pub name: String,
@@ -15,6 +15,18 @@ pub struct Manifest {
     /// Extra command run on uninstall (e.g. `flatpak uninstall`).
     #[serde(default)]
     pub uninstall_cmd: Vec<String>,
+    /// Download URL when installed from the internet (enables update checks).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// HTTP validator (ETag or Last-Modified) of what was installed from `url`.
+    #[serde(default)]
+    pub etag: Option<String>,
+    /// AppImage update information (`gh-releases-zsync|owner|repo|tag|pattern`).
+    #[serde(default)]
+    pub update_info: Option<String>,
+    /// Release marker we last installed from `update_info` (tag name).
+    #[serde(default)]
+    pub remote_version: Option<String>,
 }
 
 
@@ -77,7 +89,7 @@ mod tests {
         let f = d.join("x.txt");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(&f, "hi").unwrap();
-        let m = Manifest { id: "a".into(), name: "A".into(), version: None, kind: "test".into(), source: None, files: vec![f.clone()], uninstall_cmd: vec![] };
+        let m = Manifest { id: "a".into(), name: "A".into(), version: None, kind: "test".into(), source: None, files: vec![f.clone()], uninstall_cmd: vec![], ..Default::default() };
         m.save(&d).unwrap();
         assert_eq!(Manifest::list(&d).unwrap().len(), 1);
         Manifest::load(&d, "a").unwrap().uninstall(&d).unwrap();

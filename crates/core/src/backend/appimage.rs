@@ -68,6 +68,14 @@ fn read_icon(fs: &Fs<'_>, text: &str) -> Option<Icon> {
     None
 }
 
+/// `gh-releases-zsync|owner|repo|tag|pattern` etc. from the ELF `.upd_info` section, if present.
+pub fn update_info(data: &[u8]) -> Option<String> {
+    let r = elf::section(data, ".upd_info")?;
+    let raw = data.get(r)?;
+    let s = String::from_utf8_lossy(raw.split(|b| *b == 0).next()?).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
 fn value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     text.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('=')).map(str::trim)
 }
@@ -141,7 +149,8 @@ impl Backend for AppImage {
             }
             return Err(e);
         }
-        let m = Manifest { id, name, version: value(&text, "X-AppImage-Version").map(str::to_string), kind: "appimage".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![] };
+        let update_info = update_info(&data);
+        let m = Manifest { update_info, id, name, version: value(&text, "X-AppImage-Version").map(str::to_string), kind: "appimage".into(), source: Some(path.display().to_string()), files, uninstall_cmd: vec![], ..Default::default() };
         m.save(&dirs.state)?;
         Ok(m)
     }
