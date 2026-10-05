@@ -21,13 +21,13 @@ SLOT="0"
 KEYWORDS=""
 IUSE="+gui flatpak +snap wine"
 
+# snap? bubblewrap: snaps run in a sandbox rooted at their base snap (crates/core/src/backend/snap.rs)
 RDEPEND="
 	gui? (
 		gui-libs/gtk:4
 		gui-libs/libadwaita:1
 	)
 	flatpak? ( sys-apps/flatpak )
-	# snaps run in a bubblewrap sandbox (base snap as root), see crates/core/src/backend/snap.rs
 	snap? ( sys-apps/bubblewrap )
 	wine? ( virtual/wine )
 	x11-misc/xdg-utils
