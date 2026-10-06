@@ -254,7 +254,9 @@ fn ensure_provider(name: &str, dirs: &Dirs, opts: &Opts) -> Result<PathBuf> {
     };
     let res = Snap.install(&file, dirs, opts);
     let _ = std::fs::remove_file(&file);
-    res?;
+    let mut pm = res?;
+    pm.runtime = true; // pulled in for another app: listed separately and pruned when unused
+    pm.save(&dirs.state)?;
     Ok(root)
 }
 
@@ -344,7 +346,7 @@ impl Backend for Snap {
         let fs = open(path)?;
         let m = meta(&fs)?;
         let spec = Spec { kind: "snap", id: slug(&m.name), name: m.name.clone(), version: Some(m.version.clone()), source: path, overlay: false };
-        install_tree(
+        let mut man = install_tree(
             spec,
             dirs,
             opts,
@@ -424,7 +426,22 @@ impl Backend for Snap {
                 }
                 Ok(())
             },
-        )
+        )?;
+        // remember which runtimes this app uses, so they are only pruned when nobody needs them
+        let mut deps: Vec<String> = m.providers.iter().map(|p| slug(p)).collect();
+        if !m.providers.is_empty() {
+            if let Some(b) = m.base.as_deref().filter(|b| *b != "bare") {
+                deps.push(slug(b));
+            }
+        }
+        deps.sort();
+        deps.dedup();
+        for d in &deps {
+            Manifest::add_user(&dirs.state, d, &man.id)?;
+        }
+        man.depends_on = deps;
+        man.save(&dirs.state)?;
+        Ok(man)
     }
 }
 

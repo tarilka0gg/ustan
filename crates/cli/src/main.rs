@@ -59,7 +59,18 @@ enum Cmd {
         cmd: Option<RunnerCmd>,
     },
     /// Remove an installed app
-    Remove { id: String },
+    Remove {
+        id: String,
+        /// Remove a runtime even though apps still use it
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove runtimes (base/content snaps) that no app uses any more
+    Prune {
+        /// Only show what would be removed
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -206,10 +217,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Cmd::List => {
             for m in Manifest::list(&dir)? {
-                println!("{}\t{}\t{}", m.id, m.version.as_deref().unwrap_or("-"), m.kind);
+                let rt = if m.runtime { if m.used_by.is_empty() { "\t[runtime, не використовується]".to_string() } else { format!("\t[runtime: {}]", m.used_by.join(", ")) } } else { String::new() };
+                println!("{}\t{}\t{}{rt}", m.id, m.version.as_deref().unwrap_or("-"), m.kind);
             }
         }
-        Cmd::Remove { id } => Manifest::load(&dir, &id)?.uninstall(&dir)?,
+        Cmd::Remove { id, force } => {
+            let m = Manifest::load(&dir, &id)?;
+            if m.runtime && !m.used_by.is_empty() && !force {
+                return Err(format!("`{id}` використовують: {}. Видалення їх зламає (--force, щоб усе одно видалити)", m.used_by.join(", ")).into());
+            }
+            m.uninstall(&dir)?;
+        }
+        Cmd::Prune { dry_run } => {
+            let unused = Manifest::unused_runtimes(&dir)?;
+            let mut total = 0u64;
+            for m in &unused {
+                let sz = m.size();
+                total += sz;
+                println!("{}\t{:.0} МБ{}", m.id, sz as f64 / 1_048_576.0, if dry_run { "\t(буде видалено)" } else { "" });
+                if !dry_run {
+                    m.uninstall(&dir)?;
+                }
+            }
+            println!("{} {:.1} ГБ ({} шт.)", if dry_run { "можна звільнити" } else { "звільнено" }, total as f64 / 1_073_741_824.0, unused.len());
+        }
     }
     Ok(())
 }

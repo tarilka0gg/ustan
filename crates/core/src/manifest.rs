@@ -30,6 +30,25 @@ pub struct Manifest {
     /// Things worth telling the user after install (e.g. libraries the program needs but the system lacks).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Installed automatically because another app needs it (e.g. a snap's base or content snap).
+    #[serde(default)]
+    pub runtime: bool,
+    /// For a runtime: ids of the apps that use it. It is safe to remove only when this is empty.
+    #[serde(default)]
+    pub used_by: Vec<String>,
+    /// For an app: ids of the runtimes it uses.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+}
+
+/// Total size of the files and directories in `p` (symlinks are not followed).
+pub fn path_size(p: &Path) -> u64 {
+    let Ok(m) = std::fs::symlink_metadata(p) else { return 0 };
+    if m.is_dir() {
+        std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| path_size(&e.path())).sum()).unwrap_or(0)
+    } else {
+        m.len()
+    }
 }
 
 
@@ -64,6 +83,27 @@ impl Manifest {
         Ok(v)
     }
 
+    /// Bytes this app occupies.
+    pub fn size(&self) -> u64 {
+        self.files.iter().map(|f| path_size(f)).sum()
+    }
+
+    /// Record that `user` needs the runtime `provider`. Unknown providers are ignored.
+    pub fn add_user(dir: &Path, provider: &str, user: &str) -> Result<()> {
+        if let Ok(mut p) = Self::load(dir, provider) {
+            if !p.used_by.iter().any(|u| u == user) {
+                p.used_by.push(user.to_string());
+                p.save(dir)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Runtimes nobody uses any more.
+    pub fn unused_runtimes(dir: &Path) -> Result<Vec<Self>> {
+        Ok(Self::list(dir)?.into_iter().filter(|m| m.runtime && m.used_by.is_empty()).collect())
+    }
+
     pub fn uninstall(&self, dir: &Path) -> Result<()> {
         if let Some((prog, args)) = self.uninstall_cmd.split_first() {
             let st = std::process::Command::new(prog).args(args).status()?;
@@ -79,6 +119,13 @@ impl Manifest {
             }
         }
         let _ = std::fs::remove_file(path_for(dir, &self.id));
+        // we no longer use our runtimes
+        for dep in &self.depends_on {
+            if let Ok(mut d) = Self::load(dir, dep) {
+                d.used_by.retain(|u| u != &self.id);
+                let _ = d.save(dir);
+            }
+        }
         Ok(())
     }
 }
@@ -86,6 +133,25 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtimes_know_who_uses_them() {
+        let d = std::env::temp_dir().join(format!("ustan-rt-{}", std::process::id()));
+        let rt = Manifest { id: "rt".into(), name: "rt".into(), runtime: true, ..Default::default() };
+        let app = Manifest { id: "app".into(), name: "app".into(), depends_on: vec!["rt".into()], ..Default::default() };
+        rt.save(&d).unwrap();
+        app.save(&d).unwrap();
+        assert_eq!(Manifest::unused_runtimes(&d).unwrap().len(), 1);
+        Manifest::add_user(&d, "rt", "app").unwrap();
+        Manifest::add_user(&d, "rt", "app").unwrap(); // idempotent
+        Manifest::add_user(&d, "nope", "app").unwrap(); // unknown provider: ignored
+        assert_eq!(Manifest::load(&d, "rt").unwrap().used_by, ["app"]);
+        assert!(Manifest::unused_runtimes(&d).unwrap().is_empty());
+        app.uninstall(&d).unwrap();
+        assert!(Manifest::load(&d, "rt").unwrap().used_by.is_empty());
+        assert_eq!(Manifest::unused_runtimes(&d).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn roundtrip_and_uninstall() {
         let d = std::env::temp_dir().join(format!("ustan-t-{}", std::process::id()));

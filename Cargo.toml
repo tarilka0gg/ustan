@@ -6,3 +6,9 @@ members = ["crates/core", "crates/cli", "crates/gui"]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
+
+# hashing 100s of MB in an unoptimised debug build is painfully slow
+[profile.dev.package.sha3]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

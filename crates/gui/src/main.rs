@@ -490,7 +490,7 @@ fn add_update_button(actions: &gtk::Box, row: &adw::ActionRow, m: &Manifest, lab
 /// Rebuild the list. `check` queries the update sources in the background.
 fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: bool) {
     let state = Dirs::from_env().state;
-    let apps = Manifest::list(&state).unwrap_or_default();
+    let (runtimes, apps): (Vec<Manifest>, Vec<Manifest>) = Manifest::list(&state).unwrap_or_default().into_iter().partition(|m| m.runtime);
     UPDATES.with(|u| u.borrow_mut().retain(|id, _| apps.iter().any(|m| &m.id == id)));
     let group = adw::PreferencesGroup::builder().title("Встановлені програми").margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
     if apps.is_empty() {
@@ -549,8 +549,89 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
     fill_found(&found, bin, toasts, check);
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
     col.append(&group);
+    if !runtimes.is_empty() {
+        col.append(&runtime_group(&runtimes, bin, toasts));
+    }
     col.append(&found);
     bin.set_child(Some(&col));
+}
+
+fn human(b: u64) -> String {
+    if b >= 1 << 30 { format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} МБ", b as f64 / (1u64 << 20) as f64) }
+}
+
+/// Base/content snaps that were pulled in for other apps: sizes, who uses them, and a prune button.
+fn runtime_group(runtimes: &[Manifest], bin: &adw::Bin, toasts: &adw::ToastOverlay) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Runtime-снапи")
+        .description("Підтягнуті автоматично для інших програм. Те, що ніхто не використовує, можна прибрати.")
+        .margin_bottom(18)
+        .margin_start(18)
+        .margin_end(18)
+        .build();
+    let any_unused = runtimes.iter().any(|m| m.used_by.is_empty());
+    let prune = gtk::Button::builder().label("Прибрати невикористані").valign(gtk::Align::Center).sensitive(any_unused).build();
+    group.set_header_suffix(Some(&prune));
+    {
+        let (bin, toasts) = (bin.clone(), toasts.clone());
+        prune.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            let (bin, toasts) = (bin.clone(), toasts.clone());
+            glib::spawn_future_local(async move {
+                let r = spawn(|| {
+                    let d = Dirs::from_env().state;
+                    let unused = Manifest::unused_runtimes(&d).map_err(|e| e.to_string())?;
+                    let freed: u64 = unused.iter().map(|m| m.size()).sum();
+                    for m in &unused {
+                        m.uninstall(&d).map_err(|e| e.to_string())?;
+                    }
+                    Ok::<_, String>((unused.len(), freed))
+                })
+                .await;
+                toasts.add_toast(adw::Toast::new(&match r {
+                    Ok((0, _)) => "Нічого прибирати".to_string(),
+                    Ok((n, freed)) => format!("Прибрано {n}, звільнено {}", human(freed)),
+                    Err(e) => format!("Помилка: {e}"),
+                }));
+                refresh(&bin, &toasts, false, false);
+            });
+        });
+    }
+    for m in runtimes {
+        let users = if m.used_by.is_empty() { "не використовується".to_string() } else { format!("використовують: {}", m.used_by.join(", ")) };
+        let row = adw::ActionRow::builder().title(&m.name).subtitle(&users).build();
+        let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).sensitive(m.used_by.is_empty()).build();
+        row.add_suffix(&del);
+        group.add(&row);
+        // the size needs a walk over a big tree: do it off the UI thread
+        {
+            let (row, m2) = (row.clone(), m.clone());
+            glib::spawn_future_local(async move {
+                let size = spawn(move || m2.size()).await;
+                let cur = row.subtitle().unwrap_or_default();
+                row.set_subtitle(&format!("{} · {cur}", human(size)));
+            });
+        }
+        let (bin, toasts, id) = (bin.clone(), toasts.clone(), m.id.clone());
+        del.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            let (bin, toasts, id) = (bin.clone(), toasts.clone(), id.clone());
+            glib::spawn_future_local(async move {
+                let id2 = id.clone();
+                let r = spawn(move || {
+                    let d = Dirs::from_env().state;
+                    Manifest::load(&d, &id2).and_then(|m| m.uninstall(&d)).map_err(|e| e.to_string())
+                })
+                .await;
+                toasts.add_toast(adw::Toast::new(&match r {
+                    Ok(()) => format!("{id} видалено"),
+                    Err(e) => format!("Помилка: {e}"),
+                }));
+                refresh(&bin, &toasts, false, false);
+            });
+        });
+    }
+    group
 }
 
 fn found_row(group: &adw::PreferencesGroup, f: &Found, check: bool, bin: &adw::Bin, toasts: &adw::ToastOverlay) {
