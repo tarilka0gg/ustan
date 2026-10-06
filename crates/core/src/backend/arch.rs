@@ -57,7 +57,7 @@ impl Backend for Arch {
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
         let tar = read_tar(path)?;
         let m = meta(&tar)?;
-        let spec = Spec { kind: "arch", id: slug(&m.name), name: m.name, version: Some(m.version), source: path };
+        let spec = Spec { kind: "arch", id: slug(&m.name), name: m.name, version: Some(m.version), source: path, overlay: true };
         install_tree(
             spec,
             dirs,

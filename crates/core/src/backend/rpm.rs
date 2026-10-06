@@ -148,7 +148,7 @@ impl Backend for Rpm {
         let m = meta(&data)?;
         let off = payload_offset(&data)?;
         let cpio = decompress(payload_name(&data), &data[off..])?;
-        let spec = Spec { kind: "rpm", id: slug(&m.name), name: m.name, version: Some(m.version), source: path };
+        let spec = Spec { kind: "rpm", id: slug(&m.name), name: m.name, version: Some(m.version), source: path, overlay: true };
         install_tree(spec, dirs, opts, |root| extract_cpio(&cpio, root), |_, _, _, _| Ok(()))
     }
 }

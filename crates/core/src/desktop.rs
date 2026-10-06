@@ -79,10 +79,12 @@ fn find_icon_in(root: &Path, icon: &str, dirs: &[&str]) -> Option<PathBuf> {
     let want = icon.to_lowercase();
     all.iter()
         .filter(|p| {
-            is_img(p) && p.file_stem().is_some_and(|s| {
-                let s = s.to_string_lossy().to_lowercase();
-                (!want.is_empty() && s.contains(&want)) || s.contains("logo") || s.contains("icon")
-            })
+            is_img(p) && {
+                let s = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+                // an icon-ish name, or any image that sits in an `icons`/`pixmaps` directory
+                let in_icon_dir = p.parent().is_some_and(|d| d.components().any(|c| matches!(c.as_os_str().to_str(), Some("icons" | "icon" | "pixmaps"))));
+                (!want.is_empty() && s.contains(&want)) || s.contains("logo") || s.contains("icon") || in_icon_dir
+            }
         })
         .max_by_key(|p| icon_score(p).max(trailing_number(p)))
         .cloned()
@@ -94,11 +96,15 @@ fn trailing_number(p: &Path) -> u32 {
 }
 
 /// Rewrite Exec/TryExec/Icon/Path in a desktop entry. Returns the new text.
-pub fn rewrite(text: &str, root: &Path) -> String {
+pub fn rewrite(text: &str, root: &Path, launcher: Option<&Path>) -> String {
     let mut out = String::new();
     for line in text.lines() {
         let new = match line.split_once('=') {
-            Some(("Exec", v)) => format!("Exec={}", fix_exec(root, v)),
+            Some(("Exec", v)) => match launcher {
+                // run the (already rooted) command through the overlay launcher
+                Some(l) => format!("Exec=\"{}\" {}", l.display(), fix_exec(root, v)),
+                None => format!("Exec={}", fix_exec(root, v)),
+            },
             Some(("TryExec", _)) | Some(("DBusActivatable", _)) => continue,
             Some(("Path", _)) => continue,
             Some(("Icon", v)) => match find_icon(root, v) {
@@ -122,6 +128,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn icon_in_an_icons_directory_is_found() {
+        let r = std::env::temp_dir().join(format!("ustan-j-{}", std::process::id()));
+        std::fs::create_dir_all(r.join("app/browser/chrome/icons/default")).unwrap();
+        std::fs::create_dir_all(r.join("app/browser/res")).unwrap();
+        for n in ["default16.png", "default128.png", "default48.png"] {
+            std::fs::write(r.join("app/browser/chrome/icons/default").join(n), "").unwrap();
+        }
+        std::fs::write(r.join("app/browser/res/splash.png"), "").unwrap();
+        let p = find_icon_deep(&r, "Firefox").unwrap();
+        assert!(p.ends_with("default128.png"), "{p:?}");
+        let _ = std::fs::remove_dir_all(r);
+    }
+
+    #[test]
     fn icon_falls_back_to_logo_files() {
         let r = std::env::temp_dir().join(format!("ustan-i-{}", std::process::id()));
         std::fs::create_dir_all(r.join("opt/app")).unwrap();
@@ -142,7 +162,9 @@ mod tests {
         std::fs::write(r.join("usr/bin/foo"), "").unwrap();
         std::fs::write(r.join("usr/share/icons/hicolor/48x48/apps/foo.png"), "").unwrap();
         std::fs::write(r.join("usr/share/icons/hicolor/256x256/apps/foo.png"), "").unwrap();
-        let t = rewrite("[Desktop Entry]\nName=Foo\nExec=foo %U\nIcon=foo\nTryExec=foo\n", &r);
+        let t = rewrite("[Desktop Entry]\nName=Foo\nExec=foo %U\nIcon=foo\nTryExec=foo\n", &r, None);
+        let w = rewrite("[Desktop Entry]\nExec=foo %U\n", &r, Some(Path::new("/x/launch")));
+        assert!(w.contains("Exec=\"/x/launch\" ") && w.contains("/usr/bin/foo %U"), "{w}");
         assert!(t.contains(&format!("Exec={}/usr/bin/foo %U", r.display())), "{t}");
         assert!(t.contains("256x256/apps/foo.png"), "{t}");
         assert!(!t.contains("TryExec"));

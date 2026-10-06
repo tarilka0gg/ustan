@@ -34,6 +34,20 @@ fn attr<'a>(attrs: &'a [(String, String)], k: &str) -> Option<&'a str> {
     attrs.iter().find(|(a, _)| a.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str())
 }
 
+/// `jd-gui-1.6.6` -> (`jd-gui`, Some(`1.6.6`)): a trailing version is not part of the name.
+fn split_version(stem: &str) -> (String, Option<String>) {
+    let b = stem.as_bytes();
+    for i in 1..b.len() {
+        if matches!(b[i - 1], b'-' | b'_' | b' ') && (b[i].is_ascii_digit() || (matches!(b[i], b'v' | b'V') && b.get(i + 1).is_some_and(u8::is_ascii_digit))) {
+            let v = stem[i..].trim_start_matches(['v', 'V']);
+            if v.contains('.') {
+                return (stem[..i - 1].to_string(), Some(v.to_string()));
+            }
+        }
+    }
+    (stem.to_string(), None)
+}
+
 fn read_meta(path: &Path, bytes: &[u8]) -> Result<Meta> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Format(format!("не JAR/zip: {e}")))?;
     let mf = {
@@ -50,9 +64,10 @@ fn read_meta(path: &Path, bytes: &[u8]) -> Result<Meta> {
     let name = ["Application-Name", "Implementation-Title", "Bundle-Name", "Specification-Title"]
         .iter()
         .find_map(|k| attr(&a, k))
-        .map(str::to_string)
-        .unwrap_or_else(|| stem.clone());
-    let version = ["Implementation-Version", "Bundle-Version", "Specification-Version"].iter().find_map(|k| attr(&a, k)).map(str::to_string);
+        .map(str::to_string);
+    let (stem_name, stem_version) = split_version(&stem);
+    let name = name.unwrap_or(stem_name);
+    let version = ["Implementation-Version", "Bundle-Version", "Specification-Version"].iter().find_map(|k| attr(&a, k)).map(str::to_string).or(stem_version);
 
     // The best icon-like image: names with icon/logo, preferring svg, then the biggest file.
     let mut best: Option<(u64, String)> = None;
@@ -95,7 +110,7 @@ impl Backend for Jar {
         let bytes = std::fs::read(path)?;
         let m = read_meta(path, &bytes)?;
         let file = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "app.jar".into());
-        let spec = Spec { kind: "jar", id: slug(&m.name), name: m.name.clone(), version: m.version.clone(), source: path };
+        let spec = Spec { kind: "jar", id: slug(&m.name), name: m.name.clone(), version: m.version.clone(), source: path, overlay: false };
         install_tree(
             spec,
             dirs,
@@ -142,6 +157,14 @@ impl Backend for Jar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_is_split_from_file_names() {
+        assert_eq!(split_version("jd-gui-1.6.6"), ("jd-gui".into(), Some("1.6.6".into())));
+        assert_eq!(split_version("tool_v2.0"), ("tool".into(), Some("2.0".into())));
+        assert_eq!(split_version("plain"), ("plain".into(), None));
+        assert_eq!(split_version("app-7"), ("app-7".into(), None));
+    }
 
     #[test]
     fn manifest_parsing_with_continuations() {

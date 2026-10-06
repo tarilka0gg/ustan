@@ -302,7 +302,7 @@ impl Backend for Archive {
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
         let d = open(path)?;
         let p = plan(path, &d)?;
-        let spec = Spec { kind: "archive", id: p.id.clone(), name: p.name.clone(), version: version_of(&stem(path)), source: path };
+        let spec = Spec { kind: "archive", id: p.id.clone(), name: p.name.clone(), version: version_of(&stem(path)), source: path, overlay: false };
         install_tree(
             spec,
             dirs,

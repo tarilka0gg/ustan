@@ -70,7 +70,7 @@ impl Backend for Deb {
         let c = read_control(&data)?;
         let (name, body) = member(&data, "data.tar")?;
         let tar_bytes = decompress(&name, body)?;
-        let spec = Spec { kind: "deb", id: slug(&c.package), name: c.package, version: c.version, source: path };
+        let spec = Spec { kind: "deb", id: slug(&c.package), name: c.package, version: c.version, source: path, overlay: true };
         install_tree(
             spec,
             dirs,

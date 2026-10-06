@@ -62,7 +62,21 @@ pub fn pick(path: &Path) -> Option<Box<dyn Backend>> {
 
 /// Lowercase, filesystem-safe app id.
 pub fn slug(s: &str) -> String {
-    s.chars()
+    // `+` is common in names (Notepad++, C++) and means something: `notepadpp`, not `notepad--`
+    s.replace('+', "p")
+        .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c.to_ascii_lowercase() } else { '-' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slug;
+
+    #[test]
+    fn slugs() {
+        assert_eq!(slug("Notepad++"), "notepadpp");
+        assert_eq!(slug("Hello World_1.2"), "hello-world_1.2");
+        assert_eq!(slug("org.test.App"), "org.test.app");
+    }
 }

@@ -337,7 +337,7 @@ impl Backend for Snap {
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
         let fs = open(path)?;
         let m = meta(&fs)?;
-        let spec = Spec { kind: "snap", id: slug(&m.name), name: m.name.clone(), version: Some(m.version.clone()), source: path };
+        let spec = Spec { kind: "snap", id: slug(&m.name), name: m.name.clone(), version: Some(m.version.clone()), source: path, overlay: false };
         install_tree(
             spec,
             dirs,
