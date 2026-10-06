@@ -29,14 +29,15 @@ enum Cmd {
     },
     /// List installed apps
     List,
-    /// Make double-click on .deb/.AppImage/.flatpak* open ustan (needs ustan-gui next to this binary)
+    /// Make double-click open ustan for every format it knows (.deb .rpm .snap AppImage Flatpak .exe .msi
+    /// .jar .zip .7z .tar.*; needs ustan-gui next to this binary). The previous handlers are remembered.
     Register {
-        /// Also take over Windows .exe (replaces e.g. PortProton as default!)
+        /// Leave .exe/.msi to whatever opens them now (e.g. PortProton)
         #[arg(long)]
-        exe: bool,
-        /// Also take over .tar.gz/.tar.xz/.tar.zst/.zip (replaces your archive manager as default!)
+        skip_exe: bool,
+        /// Leave .zip/.7z/.tar.*/.jar to the archive manager
         #[arg(long)]
-        archives: bool,
+        skip_archives: bool,
     },
     /// Undo `register`
     Unregister,
@@ -185,14 +186,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("installed {} {}", m.id, m.version.as_deref().unwrap_or(""));
         }
-        Cmd::Register { exe, archives } => {
+        Cmd::Register { skip_exe, skip_archives } => {
             let gui = std::env::current_exe()?.with_file_name("ustan-gui");
             if !gui.exists() {
                 return Err(format!("{} not found; build with `cargo build --workspace`", gui.display()).into());
             }
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
-            register::register(&home, &gui, exe, archives)?;
-            println!("registered {}{}", gui.display(), if exe { " (incl. .exe)" } else { "" });
+            register::register(&home, &gui, !skip_exe, !skip_archives)?;
+            println!("registered {}", gui.display());
         }
         Cmd::Unregister => {
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);

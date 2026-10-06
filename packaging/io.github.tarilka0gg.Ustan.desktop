@@ -2,11 +2,11 @@
 Type=Application
 Name=Ustan
 GenericName=App Installer
-Comment=Install .deb, AppImage, Windows and Flatpak packages
+Comment=Install .deb, .rpm, .snap, AppImage, Flatpak, Windows and archive packages
 Exec=ustan-gui %U
 Icon=ustan
 Terminal=false
 Categories=System;PackageManager;
-MimeType=application/vnd.debian.binary-package;application/vnd.appimage;application/x-iso9660-appimage;application/vnd.flatpak;application/vnd.flatpak.ref;
+MimeType=application/vnd.debian.binary-package;application/vnd.appimage;application/x-iso9660-appimage;application/vnd.flatpak;application/vnd.flatpak.ref;application/x-rpm;application/vnd.snap;application/vnd.microsoft.portable-executable;application/x-msdownload;application/x-dosexec;application/x-ms-dos-executable;application/x-msi;application/x-compressed-tar;application/x-xz-compressed-tar;application/x-zstd-compressed-tar;application/x-bzip2-compressed-tar;application/x-tar;application/zip;application/x-7z-compressed;application/java-archive;
 StartupNotify=true
-Keywords=install;deb;appimage;flatpak;exe;wine;
+Keywords=install;deb;rpm;snap;appimage;flatpak;exe;msi;jar;zip;wine;

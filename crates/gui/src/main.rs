@@ -288,12 +288,13 @@ fn install_window(app: &adw::Application, src: String) {
             }
         }
     });
-    let opener: std::rc::Rc<std::cell::RefCell<Option<PathBuf>>> = Default::default();
+    // what the "Open" button starts: an app's menu entry, and optionally the file to open with it
+    let opener: std::rc::Rc<std::cell::RefCell<Option<(PathBuf, Option<PathBuf>)>>> = Default::default();
     bar.open.connect_clicked({
         let (w, opener) = (w.clone(), opener.clone());
         move |_| {
-            if let Some(d) = opener.borrow().as_ref() {
-                launch(d);
+            if let Some((d, f)) = opener.borrow().as_ref() {
+                launch_with(d, f.as_deref());
             }
             w.close();
         }
@@ -308,11 +309,19 @@ fn install_window(app: &adw::Application, src: String) {
         progress::clear_hook();
         match prepared {
             Err(e) => {
-                let p = page("Не вдалося відкрити файл", &e);
-                p.set_icon_name(Some("dialog-error-symbolic"));
+                // an archive with nothing to install is usually just an archive: offer its old handler
+                let nothing_to_install = e.contains("не знайшов в архіві") || e.contains("не підтримується");
+                let title = if nothing_to_install { "Тут немає чого встановлювати" } else { "Не вдалося відкрити файл" };
+                let p = page(title, &e);
+                p.set_icon_name(Some(if nothing_to_install { "dialog-information-symbolic" } else { "dialog-error-symbolic" }));
                 stack.add_named(&p, Some("end"));
                 stack.set_visible_child_name("end");
-                bar.show_end("Закрити", false, false);
+                let elsewhere = if nothing_to_install { other_handler(&src) } else { None };
+                if let Some((desktop, name)) = &elsewhere {
+                    *opener.borrow_mut() = Some((desktop.clone(), Some(PathBuf::from(&src))));
+                    bar.open.set_label(&format!("Відкрити в «{name}»"));
+                }
+                bar.show_end("Закрити", false, elsewhere.is_some());
             }
             Ok(prep) => {
                 let prep = std::sync::Arc::new(prep);
@@ -389,7 +398,7 @@ fn install_window(app: &adw::Application, src: String) {
                             };
                             stack.add_named(&end, Some("end"));
                             stack.set_visible_child_name("end");
-                            *opener.borrow_mut() = launcher.clone();
+                            *opener.borrow_mut() = launcher.clone().map(|d| (d, None));
                             bar.show_end(if ok { "Готово" } else { "Закрити" }, ok, launcher.is_some());
                         });
                     }
@@ -596,13 +605,28 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
 }
 
 /// The menu entry (.desktop file) a manifest created, if any.
+/// The app that handled this file's type before ustan took it over, and its display name.
+fn other_handler(src: &str) -> Option<(PathBuf, String)> {
+    let info = gio::File::for_path(src).query_info("standard::content-type", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok()?;
+    let mime = info.content_type()?;
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let desktop = ustan_core::register::previous_handler(&home, &mime)?;
+    let name = std::fs::read_to_string(&desktop).ok()?.lines().find_map(|l| l.strip_prefix("Name=").map(str::to_string))?;
+    Some((desktop, name))
+}
+
 fn launcher_of(m: &Manifest) -> Option<PathBuf> {
     m.files.iter().find(|f| f.extension().is_some_and(|e| e == "desktop") && f.is_file()).cloned()
 }
 
 fn launch(desktop: &std::path::Path) -> bool {
-    // `gio launch` starts the entry exactly like the menu does (Exec, Path, env, field codes)
-    std::process::Command::new("gio").arg("launch").arg(desktop).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().is_ok()
+    launch_with(desktop, None)
+}
+
+/// `gio launch` starts the entry exactly like the menu does (Exec, Path, env, field codes);
+/// with `file` it opens that file in the app.
+fn launch_with(desktop: &std::path::Path, file: Option<&std::path::Path>) -> bool {
+    std::process::Command::new("gio").arg("launch").arg(desktop).args(file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().is_ok()
 }
 
 /// The `Icon=` of a .desktop file when it is a plain file path.

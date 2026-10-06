@@ -16,7 +16,7 @@ pub const MIME_DEFAULT: &[&str] = &[
     "application/vnd.snap",
 ];
 
-/// Windows executables: opt-in, they usually belong to Wine/Proton launchers.
+/// Windows executables and installers.
 pub const MIME_EXE: &[&str] = &[
     "application/vnd.microsoft.portable-executable",
     "application/x-msdownload",
@@ -25,7 +25,7 @@ pub const MIME_EXE: &[&str] = &[
     "application/x-msi",
 ];
 
-/// Archives: opt-in, they normally belong to the archive manager.
+/// Archives and jars. ustan hands them back to the previous handler when they hold nothing installable.
 pub const MIME_ARCHIVE: &[&str] = &[
     "application/x-compressed-tar",
     "application/x-xz-compressed-tar",
@@ -36,6 +36,28 @@ pub const MIME_ARCHIVE: &[&str] = &[
     "application/x-7z-compressed",
     "application/java-archive",
 ];
+
+/// Every type ustan can open.
+pub fn all_types() -> Vec<&'static str> {
+    MIME_DEFAULT.iter().chain(MIME_EXE).chain(MIME_ARCHIVE).copied().collect()
+}
+
+/// The `.desktop` file of whatever opened `mime` before ustan took it over (from the backup made by
+/// `register`), so a zip full of photos can still go to the archive manager.
+pub fn previous_handler(home: &Path, mime: &str) -> Option<std::path::PathBuf> {
+    let prev: std::collections::BTreeMap<String, String> = toml::from_str(&std::fs::read_to_string(backup_path(home)).ok()?).ok()?;
+    let id = prev.get(mime)?;
+    [
+        home.join(".local/share/applications"),
+        "/usr/local/share/applications".into(),
+        "/usr/share/applications".into(),
+        home.join(".local/share/flatpak/exports/share/applications"),
+        "/var/lib/flatpak/exports/share/applications".into(),
+    ]
+    .into_iter()
+    .map(|d| d.join(id))
+    .find(|p| p.is_file())
+}
 
 fn tool(home: &Path, prog: &str, args: &[&str]) -> Result<()> {
     let st = Command::new(prog)
@@ -89,7 +111,7 @@ pub fn register(home: &Path, gui: &Path, with_exe: bool, with_archives: bool) ->
         all.extend(MIME_ARCHIVE);
     }
     let text = format!(
-        "[Desktop Entry]\nType=Application\nName=Ustan\nComment=Install .deb, AppImage, Windows and Flatpak packages\nExec=\"{}\" %U\nIcon=system-software-install\nTerminal=false\nCategories=System;PackageManager;\nMimeType={};\nStartupNotify=true\n",
+        "[Desktop Entry]\nType=Application\nName=Ustan\nComment=Install .deb, .rpm, .snap, AppImage, Flatpak, Windows and archive packages\nExec=\"{}\" %U\nIcon=system-software-install\nTerminal=false\nCategories=System;PackageManager;\nMimeType={};\nStartupNotify=true\n",
         gui.display(),
         all.join(";"),
     );
