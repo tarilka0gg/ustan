@@ -222,6 +222,8 @@ struct Bar {
     close: gtk::Button,
     /// "Open": start the app that was just installed.
     open: gtk::Button,
+    /// "Unpack": for an archive that holds nothing to install.
+    extract: gtk::Button,
     /// True while a job runs: the Cancel button then cancels it instead of closing the window.
     busy: std::cell::Cell<bool>,
 }
@@ -235,13 +237,15 @@ impl Bar {
         let main = btn("Встановити", "suggested-action");
         let close = btn("Готово", "suggested-action");
         let open = btn("Відкрити", "suggested-action");
+        let extract = btn("Розпакувати поруч", "suggested-action");
         root.pack_start(&cancel);
         root.pack_start(&remove);
         root.pack_end(&main);
         root.pack_end(&close);
         root.pack_end(&open);
+        root.pack_end(&extract);
         let revealer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideUp).transition_duration(260).child(&root).build();
-        Bar { revealer, cancel, remove, main, close, open, busy: std::cell::Cell::new(false) }
+        Bar { revealer, cancel, remove, main, close, open, extract, busy: std::cell::Cell::new(false) }
     }
 
     fn show_ready(&self, has_existing: bool) {
@@ -260,7 +264,7 @@ impl Bar {
         self.cancel.set_label("Скасувати");
         self.cancel.set_sensitive(true);
         self.cancel.set_visible(cancelable);
-        for b in [&self.remove, &self.main, &self.close, &self.open] {
+        for b in [&self.remove, &self.main, &self.close, &self.open, &self.extract] {
             b.set_visible(false);
         }
         self.revealer.set_reveal_child(cancelable);
@@ -276,8 +280,11 @@ impl Bar {
         self.close.set_css_classes(&[if ok && !can_open { "suggested-action" } else { "flat" }]);
         self.close.set_visible(true);
         self.open.set_visible(can_open);
+        self.extract.set_visible(false);
     }
 }
+
+type Opener = std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>>;
 
 fn install_window(app: &adw::Application, src: String) {
     let win = adw::ApplicationWindow::builder().application(app).default_width(900).default_height(720).title("Встановлення").build();
@@ -305,13 +312,13 @@ fn install_window(app: &adw::Application, src: String) {
             }
         }
     });
-    // what the "Open" button starts: an app's menu entry, and optionally the file to open with it
-    let opener: std::rc::Rc<std::cell::RefCell<Option<(PathBuf, Option<PathBuf>)>>> = Default::default();
+    // what the "Open" button does: start the installed app, open the file elsewhere, show the folder...
+    let opener: Opener = Default::default();
     bar.open.connect_clicked({
         let (w, opener) = (w.clone(), opener.clone());
         move |_| {
-            if let Some((d, f)) = opener.borrow().as_ref() {
-                launch_with(d, f.as_deref());
+            if let Some(f) = opener.borrow().as_ref() {
+                f();
             }
             w.close();
         }
@@ -334,11 +341,57 @@ fn install_window(app: &adw::Application, src: String) {
                 stack.add_named(&p, Some("end"));
                 stack.set_visible_child_name("end");
                 let elsewhere = if nothing_to_install { other_handler(&src) } else { None };
-                if let Some((desktop, name)) = &elsewhere {
-                    *opener.borrow_mut() = Some((desktop.clone(), Some(PathBuf::from(&src))));
+                if let Some((desktop, name)) = elsewhere.clone() {
+                    let file = PathBuf::from(&src);
+                    *opener.borrow_mut() = Some(std::rc::Rc::new(move || {
+                        launch_with(&desktop, Some(&file));
+                    }));
                     bar.open.set_label(&format!("Відкрити в «{name}»"));
                 }
                 bar.show_end("Закрити", false, elsewhere.is_some());
+                // an archive that is only an archive: ustan can unpack it itself
+                if nothing_to_install && is_unpackable(&src) {
+                    bar.extract.set_visible(true);
+                    let (stack, bar2, opener) = (stack.clone(), bar.clone(), opener.clone());
+                    let src2 = src.clone();
+                    bar.extract.connect_clicked(move |b| {
+                        b.set_sensitive(false);
+                        let (stack, bar, opener, src) = (stack.clone(), bar2.clone(), opener.clone(), src2.clone());
+                        glib::spawn_future_local(async move {
+                            let dest = unpack_dir(&src);
+                            let (s2, d2) = (src.clone(), dest.clone());
+                            let r = spawn(move || ustan_core::backend::archive::extract_to(std::path::Path::new(&s2), &d2).map_err(|e| e.to_string())).await;
+                            let end = match r {
+                                Ok(()) => {
+                                    let p = page("Розпаковано", &dest.display().to_string());
+                                    p.set_paintable(ok_icon().as_ref());
+                                    let d = dest.clone();
+                                    *opener.borrow_mut() = Some(std::rc::Rc::new(move || {
+                                        open_folder(&d);
+                                    }));
+                                    bar.open.set_label("Відкрити папку");
+                                    p
+                                }
+                                Err(e) => {
+                                    *opener.borrow_mut() = None;
+                                    let p = page("Не вдалося розпакувати", &e);
+                                    p.set_icon_name(Some("dialog-error-symbolic"));
+                                    p
+                                }
+                            };
+                            let opened = opener.borrow().is_some();
+                            if let Some(old) = stack.child_by_name("unpacked") {
+                                stack.remove(&old);
+                            }
+                            stack.add_named(&end, Some("unpacked"));
+                            stack.set_visible_child_name("unpacked");
+                            bar.show_end("Закрити", false, opened);
+                        });
+                    });
+                    if std::env::var_os("USTAN_GUI_AUTOSTART").is_some() {
+                        bar.extract.emit_clicked(); // test hook, see below
+                    }
+                }
             }
             Ok(prep) => {
                 let prep = std::sync::Arc::new(prep);
@@ -415,7 +468,9 @@ fn install_window(app: &adw::Application, src: String) {
                             };
                             stack.add_named(&end, Some("end"));
                             stack.set_visible_child_name("end");
-                            *opener.borrow_mut() = launcher.clone().map(|d| (d, None));
+                            *opener.borrow_mut() = launcher.clone().map(|d| std::rc::Rc::new(move || {
+                                launch(&d);
+                            }) as std::rc::Rc<dyn Fn()>);
                             bar.show_end(if ok { "Готово" } else { "Закрити" }, ok, launcher.is_some());
                         });
                     }
@@ -627,9 +682,46 @@ fn other_handler(src: &str) -> Option<(PathBuf, String)> {
     let info = gio::File::for_path(src).query_info("standard::content-type", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE).ok()?;
     let mime = info.content_type()?;
     let home = PathBuf::from(std::env::var_os("HOME")?);
-    let desktop = ustan_core::register::previous_handler(&home, &mime)?;
+    // who handled it before ustan (remembered by `register`), else any other app registered for the type
+    let desktop = ustan_core::register::previous_handler(&home, &mime).or_else(|| {
+        gio::AppInfo::all_for_type(&mime)
+            .into_iter()
+            .filter_map(|a| a.id())
+            .filter(|id| !id.starts_with("io.github.tarilka0gg.Ustan"))
+            .find_map(|id| ustan_core::register::find_desktop(&home, &id))
+    })?;
     let name = std::fs::read_to_string(&desktop).ok()?.lines().find_map(|l| l.strip_prefix("Name=").map(str::to_string))?;
     Some((desktop, name))
+}
+
+/// Archive formats `extract_to` can unpack.
+fn is_unpackable(src: &str) -> bool {
+    let l = src.to_lowercase();
+    [".zip", ".7z", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.zst", ".tar.bz2", ".tbz2", ".jar"].iter().any(|e| l.ends_with(e))
+}
+
+/// Next to the archive, in a folder named like it: `holiday.zip` -> `holiday/`, `holiday-2/`, ...
+fn unpack_dir(src: &str) -> PathBuf {
+    let p = std::path::Path::new(src);
+    let mut name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "archive".into());
+    for e in [".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tgz", ".txz", ".tbz2", ".tar", ".zip", ".7z", ".jar"] {
+        if let Some(s) = name.to_lowercase().strip_suffix(e).map(str::len) {
+            name.truncate(s);
+            break;
+        }
+    }
+    let base = p.parent().unwrap_or(std::path::Path::new(".")).join(&name);
+    let mut cand = base.clone();
+    let mut n = 2;
+    while cand.exists() {
+        cand = base.with_file_name(format!("{name}-{n}"));
+        n += 1;
+    }
+    cand
+}
+
+fn open_folder(dir: &std::path::Path) {
+    let _ = std::process::Command::new("gio").arg("open").arg(dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
 fn launcher_of(m: &Manifest) -> Option<PathBuf> {

@@ -46,7 +46,11 @@ pub fn all_types() -> Vec<&'static str> {
 /// `register`), so a zip full of photos can still go to the archive manager.
 pub fn previous_handler(home: &Path, mime: &str) -> Option<std::path::PathBuf> {
     let prev: std::collections::BTreeMap<String, String> = toml::from_str(&std::fs::read_to_string(backup_path(home)).ok()?).ok()?;
-    let id = prev.get(mime)?;
+    find_desktop(home, prev.get(mime)?)
+}
+
+/// Path of the `.desktop` file with this id, looked up the way menus do.
+pub fn find_desktop(home: &Path, id: &str) -> Option<std::path::PathBuf> {
     [
         home.join(".local/share/applications"),
         "/usr/local/share/applications".into(),

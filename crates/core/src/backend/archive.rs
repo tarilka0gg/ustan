@@ -290,6 +290,12 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Unpack a zip/7z/tar archive as it is into `dest`: plain extraction, nothing is installed.
+pub fn extract_to(path: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    extract(&open(path)?, dest)
+}
+
 impl Backend for Archive {
     fn kind(&self) -> &'static str {
         "archive"
@@ -352,6 +358,24 @@ impl Backend for Archive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_to_unpacks_a_zip_of_plain_files() {
+        let d = std::env::temp_dir().join(format!("ustan-xt-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let z = d.join("photos.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&z).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("a/readme.txt", o).unwrap();
+        std::io::Write::write_all(&mut w, b"hi").unwrap();
+        w.start_file("../escape.txt", o).unwrap(); // must not leave the target
+        std::io::Write::write_all(&mut w, b"no").unwrap();
+        w.finish().unwrap();
+        extract_to(&z, &d.join("out")).unwrap();
+        assert_eq!(std::fs::read(d.join("out/a/readme.txt")).unwrap(), b"hi");
+        assert!(!d.join("escape.txt").exists());
+        let _ = std::fs::remove_dir_all(d);
+    }
 
     #[test]
     fn names_and_versions() {
