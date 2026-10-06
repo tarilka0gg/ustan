@@ -6,12 +6,19 @@
 		<name>tarilka0gg</name>
 	</maintainer>
 	<longdescription>
-		A Windows-style installer for Linux: double-click a .deb, AppImage, Flatpak bundle or Windows .exe and
-		install it per user with launchers and an uninstall entry. GTK4/libadwaita window and a CLI.
+		A Windows-style installer for Linux: double-click a .deb, .rpm, .snap, AppImage, Flatpak,
+		Windows .exe/.msi, .jar or an archive and it is installed per user, without root, with a menu
+		entry, an icon and a clean uninstall. Snaps run without snapd, packages that hard-code
+		/usr paths run with an overlay, Windows programs run through Wine (system, PortProton or
+		Steam Proton). Downloads are checksum-verified and installed apps can be updated in the
+		background. A GTK4/libadwaita window and a CLI.
 	</longdescription>
 	<use>
 		<flag name="gui">Build the GTK4/libadwaita window (ustan-gui)</flag>
-		<flag name="flatpak">Install flatpak: references and bundles through the flatpak tool</flag>
-		<flag name="wine">Run Windows .exe installers under Wine</flag>
+		<flag name="flatpak">Install flatpak: references, bundles and Flathub ids through the flatpak tool</flag>
+		<flag name="wine">Run Windows .exe/.msi programs (needs Wine; PortProton and Steam Proton are found too)</flag>
 	</use>
+	<upstream>
+		<remote-id type="github">tarilka0gg/ustan</remote-id>
+	</upstream>
 </pkgmetadata>
