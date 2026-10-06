@@ -84,6 +84,14 @@ enum Cmd {
     },
 }
 
+/// Deletes the file when dropped (a download that was only inspected).
+struct TempFile(PathBuf);
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Subcommand)]
 enum AutoCmd {
     /// Start checking (sets up a systemd timer or cron when the system has one)
@@ -134,7 +142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = dirs.state.clone();
     match Cli::parse().cmd {
         Cmd::Inspect { file } => {
-            let file = PathBuf::from(file);
+            // a URL is downloaded to the cache, looked at, and deleted again
+            let fetched = fetch::is_url(&file).then(|| fetch::download_auto(&file, &dirs.state.join("cache"), file.rsplit('/').next().unwrap_or("файл"))).transpose()?;
+            let file = fetched.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| PathBuf::from(&file));
+            let _guard = fetched.map(|f| TempFile(f.path));
             let b = backend::pick(&file).ok_or("unsupported package type")?;
             println!("{:#?}", b.inspect(&file)?);
         }

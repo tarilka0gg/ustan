@@ -22,18 +22,8 @@ fn read_exe(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-/// `npp.8.9.8.1.Installer.x64` -> `npp`: drop version numbers and installer/arch words from a file name.
 fn app_name(stem: &str) -> String {
-    const NOISE: &[&str] = &["installer", "setup", "install", "x64", "x86", "win64", "win32", "amd64", "64bit", "32bit", "windows", "win", "portable", "offline", "online"];
-    let words: Vec<&str> = stem
-        .split(['.', '-', '_', ' '])
-        .filter(|w| !w.is_empty())
-        .filter(|w| {
-            let l = w.to_lowercase();
-            !NOISE.contains(&l.as_str()) && !l.trim_start_matches('v').chars().all(|c| c.is_ascii_digit())
-        })
-        .collect();
-    if words.is_empty() { stem.to_string() } else { words.join("-") }
+    super::tree::clean_name(stem)
 }
 
 fn stem(path: &Path) -> String {

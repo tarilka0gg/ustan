@@ -57,7 +57,7 @@ fn cleanup(p: &Prepared) {
 }
 
 /// Install; with `replace` the existing copy is removed first (reinstall).
-fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, String> {
+fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<(String, Option<PathBuf>), String> {
     let dirs = Dirs::from_env();
     if let (true, Some(old)) = (replace, &p.existing) {
         old.uninstall(&dirs.state).map_err(|e| e.to_string())?;
@@ -78,14 +78,14 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, S
             None => text.push_str("\n⚠ Контрольної суми немає: завантаження не перевірено"),
         }
     }
-    Ok(text)
+    Ok((text, launcher_of(&m)))
 }
 
-fn run_remove(p: &Prepared) -> Result<String, String> {
+fn run_remove(p: &Prepared) -> Result<(String, Option<PathBuf>), String> {
     let m = p.existing.as_ref().ok_or("Програма не встановлена")?;
     m.uninstall(&Dirs::from_env().state).map_err(|e| e.to_string())?;
     cleanup(p);
-    Ok(m.name.clone())
+    Ok((m.name.clone(), None))
 }
 
 fn spawn<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> impl std::future::Future<Output = T> {
@@ -177,6 +177,12 @@ fn fade(w: &impl IsA<gtk::Widget>, from: f64, to: f64, ms: u32, delay_ms: u32, t
     }
 }
 
+/// A green check mark that does not depend on the icon theme (some themes lack the symbolic icons).
+fn ok_icon() -> Option<gdk::Texture> {
+    const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><circle cx="48" cy="48" r="44" fill="#33a76a"/><path d="M27 50l14 14 28-30" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+    gdk::Texture::from_bytes(&glib::Bytes::from_static(SVG.as_bytes())).ok()
+}
+
 fn show_icon(sp: &adw::StatusPage, info: &Info) {
     if let Some(i) = &info.icon {
         let f = std::env::temp_dir().join(format!("ustan-icon-{}.{}", std::process::id(), i.ext));
@@ -197,6 +203,8 @@ struct Bar {
     remove: gtk::Button,
     main: gtk::Button,
     close: gtk::Button,
+    /// "Open": start the app that was just installed.
+    open: gtk::Button,
     /// True while a job runs: the Cancel button then cancels it instead of closing the window.
     busy: std::cell::Cell<bool>,
 }
@@ -209,12 +217,14 @@ impl Bar {
         let remove = btn("Видалити", "destructive-action");
         let main = btn("Встановити", "suggested-action");
         let close = btn("Готово", "suggested-action");
+        let open = btn("Відкрити", "suggested-action");
         root.pack_start(&cancel);
         root.pack_start(&remove);
         root.pack_end(&main);
         root.pack_end(&close);
+        root.pack_end(&open);
         let revealer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideUp).transition_duration(260).child(&root).build();
-        Bar { revealer, cancel, remove, main, close, busy: std::cell::Cell::new(false) }
+        Bar { revealer, cancel, remove, main, close, open, busy: std::cell::Cell::new(false) }
     }
 
     fn show_ready(&self, has_existing: bool) {
@@ -233,21 +243,22 @@ impl Bar {
         self.cancel.set_label("Скасувати");
         self.cancel.set_sensitive(true);
         self.cancel.set_visible(cancelable);
-        for b in [&self.remove, &self.main, &self.close] {
+        for b in [&self.remove, &self.main, &self.close, &self.open] {
             b.set_visible(false);
         }
         self.revealer.set_reveal_child(cancelable);
     }
 
-    fn show_end(&self, label: &str, ok: bool) {
+    fn show_end(&self, label: &str, ok: bool, can_open: bool) {
         self.busy.set(false);
         self.revealer.set_reveal_child(true);
         for b in [&self.cancel, &self.remove, &self.main] {
             b.set_visible(false);
         }
-        self.close.set_label(label);
-        self.close.set_css_classes(&[if ok { "suggested-action" } else { "flat" }]);
+        self.close.set_label(if can_open { "Закрити" } else { label });
+        self.close.set_css_classes(&[if ok && !can_open { "suggested-action" } else { "flat" }]);
         self.close.set_visible(true);
+        self.open.set_visible(can_open);
     }
 }
 
@@ -277,6 +288,16 @@ fn install_window(app: &adw::Application, src: String) {
             }
         }
     });
+    let opener: std::rc::Rc<std::cell::RefCell<Option<PathBuf>>> = Default::default();
+    bar.open.connect_clicked({
+        let (w, opener) = (w.clone(), opener.clone());
+        move |_| {
+            if let Some(d) = opener.borrow().as_ref() {
+                launch(d);
+            }
+            w.close();
+        }
+    });
     bar.close.connect_clicked(move |_| w.close());
 
     glib::spawn_future_local(async move {
@@ -291,7 +312,7 @@ fn install_window(app: &adw::Application, src: String) {
                 p.set_icon_name(Some("dialog-error-symbolic"));
                 stack.add_named(&p, Some("end"));
                 stack.set_visible_child_name("end");
-                bar.show_end("Закрити", false);
+                bar.show_end("Закрити", false, false);
             }
             Ok(prep) => {
                 let prep = std::sync::Arc::new(prep);
@@ -325,8 +346,8 @@ fn install_window(app: &adw::Application, src: String) {
 
                 // Run `job` off-thread, then show a result page.
                 let run = std::rc::Rc::new({
-                    let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
-                    move |job: Box<dyn FnOnce(&Prepared) -> Result<String, String> + Send>, ok_title: &'static str, err_title: &'static str, cancelable: bool| {
+                    let (stack, prep, bar, opener) = (stack.clone(), prep.clone(), bar.clone(), opener.clone());
+                    move |job: Box<dyn FnOnce(&Prepared) -> Result<(String, Option<PathBuf>), String> + Send>, ok_title: &'static str, err_title: &'static str, cancelable: bool| {
                         let prog = progress_page("Зачекай…", &prep.info.name);
                         if let Some(old) = stack.child_by_name("busy") {
                             stack.remove(&old);
@@ -336,7 +357,7 @@ fn install_window(app: &adw::Application, src: String) {
                         bar.show_busy(cancelable);
                         progress::reset();
                         follow_progress(&prog);
-                        let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
+                        let (stack, prep, bar, opener) = (stack.clone(), prep.clone(), bar.clone(), opener.clone());
                         glib::spawn_future_local(async move {
                             let r = spawn({
                                 let prep = prep.clone();
@@ -345,15 +366,19 @@ fn install_window(app: &adw::Application, src: String) {
                             .await;
                             progress::clear_hook();
                             let ok = r.is_ok();
+                            let launcher = r.as_ref().ok().and_then(|(_, l)| l.clone());
                             let end = match r {
                                 Err(e) if e == "скасовано" => {
                                     let p = page("Скасовано", "Нічого не змінено");
                                     p.set_icon_name(Some("dialog-information-symbolic"));
                                     p
                                 }
-                                Ok(name) => {
+                                Ok((name, _)) => {
                                     let p = page(ok_title, &name);
-                                    p.set_icon_name(Some("emblem-ok-symbolic"));
+                                    match ok_icon() {
+                                        Some(t) => p.set_paintable(Some(&t)),
+                                        None => p.set_icon_name(Some("object-select-symbolic")),
+                                    }
                                     p
                                 }
                                 Err(e) => {
@@ -364,7 +389,8 @@ fn install_window(app: &adw::Application, src: String) {
                             };
                             stack.add_named(&end, Some("end"));
                             stack.set_visible_child_name("end");
-                            bar.show_end(if ok { "Готово" } else { "Закрити" }, ok);
+                            *opener.borrow_mut() = launcher.clone();
+                            bar.show_end(if ok { "Готово" } else { "Закрити" }, ok, launcher.is_some());
                         });
                     }
                 });
@@ -500,6 +526,19 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
         let row = adw::ActionRow::builder().title(&m.name).subtitle(format!("{} · {}", m.kind, m.version.as_deref().unwrap_or("—"))).build();
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
+        if let Some(d) = launcher_of(&m) {
+            let img = match icon_file(&d) {
+                Some(p) => gtk::Image::from_file(p),
+                None => gtk::Image::from_icon_name("application-x-executable"),
+            };
+            img.set_pixel_size(36);
+            row.add_prefix(&img);
+            let run = gtk::Button::builder().label("Запустити").valign(gtk::Align::Center).build();
+            run.connect_clicked(move |_| {
+                launch(&d);
+            });
+            actions.append(&run);
+        }
         actions.append(&del);
         row.add_suffix(&actions);
 
@@ -554,6 +593,23 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
     }
     col.append(&found);
     bin.set_child(Some(&col));
+}
+
+/// The menu entry (.desktop file) a manifest created, if any.
+fn launcher_of(m: &Manifest) -> Option<PathBuf> {
+    m.files.iter().find(|f| f.extension().is_some_and(|e| e == "desktop") && f.is_file()).cloned()
+}
+
+fn launch(desktop: &std::path::Path) -> bool {
+    // `gio launch` starts the entry exactly like the menu does (Exec, Path, env, field codes)
+    std::process::Command::new("gio").arg("launch").arg(desktop).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().is_ok()
+}
+
+/// The `Icon=` of a .desktop file when it is a plain file path.
+fn icon_file(desktop: &std::path::Path) -> Option<PathBuf> {
+    let t = std::fs::read_to_string(desktop).ok()?;
+    let p = PathBuf::from(t.lines().find_map(|l| l.strip_prefix("Icon="))?.trim());
+    p.is_absolute().then_some(p).filter(|p| p.is_file())
 }
 
 fn human(b: u64) -> String {
@@ -640,6 +696,17 @@ fn found_row(group: &adw::PreferencesGroup, f: &Found, check: bool, bin: &adw::B
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.add_suffix(&actions);
     group.add(&row);
+    // "Add": open the usual install dialog for this file (copies it under ustan, makes a launcher)
+    {
+        let add = gtk::Button::builder().label("Додати").tooltip_text("Встановити під керування ustan").valign(gtk::Align::Center).build();
+        let path = f.path.display().to_string();
+        add.connect_clicked(move |_| {
+            if let Some(app) = gio::Application::default().and_then(|a| a.downcast::<adw::Application>().ok()) {
+                install_window(&app, path.clone());
+            }
+        });
+        actions.append(&add);
+    }
 
     let show = {
         let (actions, row, f, bin, toasts) = (actions.clone(), row.clone(), f.clone(), bin.clone(), toasts.clone());

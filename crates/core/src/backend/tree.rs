@@ -143,6 +143,54 @@ pub fn scan_missing(root: &Path, whole_tree: bool) -> Vec<String> {
     missing.into_iter().collect()
 }
 
+/// `npp.8.9.8.1.Installer.x64` -> `npp`, `tool-linux-amd64` -> `tool`: drop versions and
+/// installer/OS/arch words from a file name to get the program's name.
+pub fn clean_name(stem: &str) -> String {
+    const NOISE: &[&str] = &[
+        "installer", "setup", "install", "x64", "x86", "x86_64", "win64", "win32", "amd64", "64bit", "32bit", "windows", "win",
+        "portable", "offline", "online", "linux", "gnu", "musl", "unknown", "static", "bin", "elf",
+    ];
+    let words: Vec<&str> = stem
+        .split(['.', '-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .filter(|w| {
+            let l = w.to_lowercase();
+            !NOISE.contains(&l.as_str()) && !l.trim_start_matches('v').chars().all(|c| c.is_ascii_digit())
+        })
+        .collect();
+    if words.is_empty() { stem.to_string() } else { words.join("-") }
+}
+
+/// Make `exe` (inside `root`) launchable: a menu entry for a graphical program, otherwise a
+/// symlink in `~/.local/bin` so it is in PATH. Created files are appended to `files`.
+pub fn make_launcher(root: &Path, dirs: &Dirs, id: &str, name: &str, exe: &Path, gui: bool, bin_name: Option<&str>, files: &mut Vec<PathBuf>) -> Result<()> {
+    if gui {
+        let mut t = format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nExec=\"{}\"\nPath={}\nTerminal=false\nCategories=Utility;\n",
+            exe.display(),
+            exe.parent().unwrap_or(root).display()
+        );
+        if let Some(i) = desktop::find_icon_deep(root, name) {
+            t.push_str(&format!("Icon={}\n", i.display()));
+        }
+        std::fs::create_dir_all(&dirs.apps)?;
+        let dst = dirs.apps.join(format!("ustan-{id}.desktop"));
+        std::fs::write(&dst, t)?;
+        files.push(dst);
+    } else {
+        let bin = dirs.opt.parent().unwrap_or(&dirs.opt).join("bin");
+        std::fs::create_dir_all(&bin)?;
+        // a plain archive keeps its program's own name; a bare download is named by the cleaned name
+        let link = bin.join(bin_name.map(std::ffi::OsString::from).unwrap_or_else(|| exe.file_name().unwrap().to_owned()));
+        if std::fs::symlink_metadata(&link).is_ok() {
+            return Err(Error::Format(format!("{} уже існує в {}", link.file_name().unwrap().to_string_lossy(), bin.display())));
+        }
+        std::os::unix::fs::symlink(exe, &link)?;
+        files.push(link);
+    }
+    Ok(())
+}
+
 /// First `cmd` found in PATH.
 pub fn which(cmd: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(cmd)).find(|p| p.is_file())
@@ -314,8 +362,8 @@ pub fn install_tree(
         return Err(e);
     }
     let mut notes = Vec::new();
-    if matches!(spec.kind, "deb" | "rpm" | "arch" | "archive") {
-        let missing = scan_missing(&root, spec.kind == "archive");
+    if matches!(spec.kind, "deb" | "rpm" | "arch" | "archive" | "elf" | "makeself") {
+        let missing = scan_missing(&root, matches!(spec.kind, "archive" | "elf" | "makeself"));
         if !missing.is_empty() {
             let shown: Vec<_> = missing.iter().take(8).cloned().collect();
             let more = if missing.len() > shown.len() { format!(" та ще {}", missing.len() - shown.len()) } else { String::new() };

@@ -3,7 +3,7 @@
 //! and get a symlink in `~/.local/bin`.
 use super::tree::{decompress, dest, install_tree, safe_rel, Spec};
 use super::{slug, Backend, Info, Opts};
-use crate::{desktop, dirs::Dirs, manifest::Manifest, pe, Error, Result};
+use crate::{dirs::Dirs, manifest::Manifest, pe, Error, Result};
 use std::io::{Cursor, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -142,7 +142,7 @@ fn looks_gui(entries: &[Entry]) -> bool {
 }
 
 /// File name without any archive extension, e.g. `ripgrep-14.1-x86_64.tar.gz` -> `ripgrep-14.1-x86_64`.
-fn stem(path: &Path) -> String {
+pub(super) fn stem(path: &Path) -> String {
     let n = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let l = n.to_lowercase();
     for e in TAR_EXTS.iter().chain(&[".zip", ".7z"]) {
@@ -174,7 +174,7 @@ fn main_win_exe<'a>(entries: &'a [Entry], stem: &str) -> Option<&'a Entry> {
 }
 
 /// First `1.2` / `1.2.3` style number in a name.
-fn version_of(s: &str) -> Option<String> {
+pub(super) fn version_of(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -341,31 +341,7 @@ impl Backend for Archive {
                 if files.len() > 1 {
                     return Ok(()); // the archive shipped its own launchers (usr/share/applications)
                 }
-                if p.gui || super::tree::is_gui_exe(&exe) {
-                    let icon = desktop::find_icon_deep(root, &p.name);
-                    let mut t = format!(
-                        "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\"\nPath={}\nTerminal=false\nCategories=Utility;\n",
-                        p.name,
-                        exe.display(),
-                        exe.parent().unwrap().display()
-                    );
-                    if let Some(i) = icon {
-                        t.push_str(&format!("Icon={}\n", i.display()));
-                    }
-                    let dst = dirs.apps.join(format!("ustan-{id}.desktop"));
-                    std::fs::write(&dst, t)?;
-                    files.push(dst);
-                } else {
-                    // A command-line tool: make it available in PATH.
-                    let bin = dirs.opt.parent().unwrap_or(&dirs.opt).join("bin");
-                    std::fs::create_dir_all(&bin)?;
-                    let link = bin.join(exe.file_name().unwrap());
-                    if std::fs::symlink_metadata(&link).is_ok() {
-                        return Err(Error::Format(format!("{} уже існує в {}", link.file_name().unwrap().to_string_lossy(), bin.display())));
-                    }
-                    std::os::unix::fs::symlink(&exe, &link)?;
-                    files.push(link);
-                }
+                super::tree::make_launcher(root, dirs, id, &p.name, &exe, p.gui || super::tree::is_gui_exe(&exe), None, files)?;
                 Ok(())
             },
         )
@@ -410,5 +386,112 @@ mod tests {
             e("app-1.0/bin/helper", 0o755, 900_000, b"\x7fELF"),
         ];
         assert_eq!(main_exe(&v, "app-1.0").unwrap().path, PathBuf::from("app-1.0/bin/app"));
+    }
+}
+
+
+// ---------- makeself (.run / .sh self-extracting archives) ----------
+
+/// A shell script followed by a tar payload. We only *read* the payload; the script is never run.
+pub struct Makeself;
+
+/// Payload of a makeself archive: everything after the first `skip` lines of the header.
+fn makeself_payload(bytes: &[u8]) -> Result<&[u8]> {
+    let head = &bytes[..bytes.len().min(16 * 1024)];
+    let text = String::from_utf8_lossy(head);
+    if !text.contains("Makeself") {
+        return Err(Error::Format("це не makeself-архів".into()));
+    }
+    let skip: usize = text
+        .lines()
+        .find_map(|l| l.strip_prefix("skip=").or_else(|| l.strip_prefix("SKIP=")))
+        .and_then(|v| v.trim().trim_matches(['"', '\'']).parse().ok())
+        .ok_or_else(|| Error::Format("у заголовку makeself немає skip=".into()))?;
+    let mut off = 0usize;
+    for _ in 0..skip {
+        off += bytes[off..].iter().position(|b| *b == b'\n').ok_or_else(|| Error::Format("заголовок makeself обірваний".into()))? + 1;
+    }
+    Ok(&bytes[off..])
+}
+
+fn makeself_tar(path: &Path) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(path)?;
+    let payload = makeself_payload(&bytes)?;
+    let ext = match payload {
+        [0x1f, 0x8b, ..] => ".gz",
+        [b'B', b'Z', b'h', ..] => ".bz2",
+        [0xfd, b'7', b'z', b'X', b'Z', 0, ..] => ".xz",
+        [0x28, 0xb5, 0x2f, 0xfd, ..] => ".zst",
+        _ => ".tar",
+    };
+    decompress(ext, payload)
+}
+
+impl Backend for Makeself {
+    fn kind(&self) -> &'static str {
+        "makeself"
+    }
+
+    fn detect(&self, path: &Path) -> bool {
+        let n = lower(path);
+        (n.ends_with(".run") || n.ends_with(".sh") || n.ends_with(".bin"))
+            && std::fs::File::open(path)
+                .and_then(|mut f| {
+                    let mut b = vec![0u8; 4096];
+                    let n = f.read(&mut b)?;
+                    Ok(b[..n].windows(8).any(|w| w == b"Makeself"))
+                })
+                .unwrap_or(false)
+    }
+
+    fn inspect(&self, path: &Path) -> Result<Info> {
+        let d = Data::Tar(makeself_tar(path)?);
+        plan(path, &d)?; // fails when there is no program inside
+        let st = stem_of_script(path);
+        let name = super::tree::clean_name(&st);
+        let warning = Some("скрипти встановлення з .run не виконуються: файли лише розпаковуються".to_string());
+        Ok(Info { id: slug(&name), name, version: version_of(&st), kind: "makeself", icon: None, warning })
+    }
+
+    fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
+        let d = Data::Tar(makeself_tar(path)?);
+        let p = plan(path, &d)?;
+        let name = super::tree::clean_name(&stem_of_script(path));
+        let spec = Spec { kind: "makeself", id: slug(&name), name: name.clone(), version: version_of(&stem_of_script(path)), source: path, overlay: false };
+        install_tree(
+            spec,
+            dirs,
+            opts,
+            |root| extract(&d, root),
+            |root, dirs, id, files| {
+                let exe = root.join(&p.exe);
+                std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
+                super::tree::make_launcher(root, dirs, id, &p.name, &exe, p.gui || super::tree::is_gui_exe(&exe), None, files)
+            },
+        )
+    }
+}
+
+fn stem_of_script(path: &Path) -> String {
+    let n = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    for e in [".run", ".sh", ".bin"] {
+        if let Some(s) = n.strip_suffix(e) {
+            return s.to_string();
+        }
+    }
+    n
+}
+
+#[cfg(test)]
+mod makeself_tests {
+    use super::*;
+
+    #[test]
+    fn payload_starts_after_the_header_lines() {
+        let mut f = b"#!/bin/sh\n# This script was generated using Makeself 2.5\nskip=\"4\"\nexit 0\nPAYLOAD".to_vec();
+        assert_eq!(makeself_payload(&f).unwrap(), b"PAYLOAD");
+        f[0] = b'x';
+        assert!(makeself_payload(b"#!/bin/sh\necho hi\n").is_err(), "a plain script is not a makeself archive");
+        assert!(makeself_payload(b"# Makeself\nnothing here\n").is_err());
     }
 }
