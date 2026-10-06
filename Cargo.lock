@@ -2081,7 +2081,7 @@ dependencies = [
 
 [[package]]
 name = "ustan"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "ustan-core",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "ustan-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "backhand",
  "bzip2",
@@ -2113,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "ustan-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-channel",
  "gtk4",
