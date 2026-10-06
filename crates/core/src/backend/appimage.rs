@@ -34,6 +34,11 @@ pub struct Probe {
 }
 
 /// Cheap magic check: ELF + `AI\x02` at offset 8.
+/// The classic AppImage runtime needs libfuse.so.2 (many distros ship only FUSE 3).
+fn has_fuse2() -> bool {
+    ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu"].iter().any(|d| Path::new(d).join("libfuse.so.2").exists())
+}
+
 pub fn is_appimage(path: &Path) -> bool {
     use std::io::Read as _;
     let mut b = [0u8; 12];
@@ -160,7 +165,10 @@ impl Backend for AppImage {
                 match l.split_once('=') {
                     Some(("Exec", v)) => {
                         let args = v.split_once(char::is_whitespace).map_or("", |(_, a)| a);
-                        out.push_str(&format!("Exec={} {}\n", bin.display(), args).replace(" \n", "\n"));
+                        // Without FUSE 2 the runtime cannot mount itself ("libfuse.so.2: cannot open shared
+                        // object"): let it unpack to a temp dir and run from there instead.
+                        let env = if has_fuse2() { "" } else { "env APPIMAGE_EXTRACT_AND_RUN=1 " };
+                        out.push_str(&format!("Exec={env}{} {}\n", bin.display(), args).replace(" \n", "\n"));
                     }
                     Some(("TryExec", _)) | Some(("Path", _)) | Some(("DBusActivatable", _)) => {}
                     Some(("Icon", _)) if icon_path.is_some() => out.push_str(&format!("Icon={}\n", icon_path.as_ref().unwrap().display())),

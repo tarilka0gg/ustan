@@ -15,7 +15,7 @@ MAP = {
     "CC0-1.0": "CC0-1.0", "Unlicense": "Unlicense", "0BSD": "0BSD", "BSL-1.0": "Boost-1.0",
     "Apache-2.0 WITH LLVM-exception": "Apache-2.0-with-LLVM-exceptions", "LGPL-2.1-or-later": "LGPL-2.1+",
     "GPL-2.0-or-later": "GPL-2+", "GPL-2.0": "GPL-2", "GPL-2.0-only": "GPL-2",
-    "bzip2-1.0.6": "BZIP2", "CDLA-Permissive-2.0": "CDLA-Permissive-2.0", "MIT-0": "MIT-0", "BSD-3-Clause-Clear": "BSD",
+    "bzip2-1.0.6": "BZIP2", "CDLA-Permissive-2.0": "CDLA-Permissive-2.0", "MIT-0": "MIT-0", "BSD-3-Clause-Clear": "BSD", "BSD-1-Clause": "BSD-1",
 }
 # not Cargo dependencies, but compiled in: xz sources inside liblzma-sys (forced by backhand)
 EXTRA = ["0BSD"]
