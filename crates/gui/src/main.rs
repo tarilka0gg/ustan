@@ -546,8 +546,6 @@ fn manager_window(app: &adw::Application) {
     let (a2, w2) = (app.clone(), win.clone());
     open.connect_clicked(move |_| pick_file(&a2, &w2));
     win.present();
-    // Launched without a file: go straight to the file chooser; cancelling leaves the manager.
-    pick_file(app, &win);
 }
 
 fn pick_file(app: &adw::Application, parent: &adw::ApplicationWindow) {
