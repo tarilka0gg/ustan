@@ -144,6 +144,13 @@ fn remember_previous(home: &Path, types: &[&str], known: std::collections::BTree
     }
 }
 
+/// A path for `Exec=`: quoted only when it has characters the spec makes special. `xdg-mime` takes
+/// the quotes as part of the file name and then cannot find the program, so it ignores the handler.
+fn exec_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    if s.chars().any(|c| c.is_whitespace() || "\"'\\<>~|&;$*?#()`".contains(c)) { format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")) } else { s }
+}
+
 pub fn register(home: &Path, gui: &Path, with_exe: bool, with_archives: bool) -> Result<()> {
     let apps = home.join(".local/share/applications");
     std::fs::create_dir_all(&apps)?;
@@ -155,8 +162,8 @@ pub fn register(home: &Path, gui: &Path, with_exe: bool, with_archives: bool) ->
         all.extend(MIME_ARCHIVE);
     }
     let text = format!(
-        "[Desktop Entry]\nType=Application\nName=Ustan\nComment=Install .deb, .rpm, .snap, AppImage, Flatpak, Windows and archive packages\nExec=\"{}\" %U\nIcon=system-software-install\nTerminal=false\nCategories=System;PackageManager;\nMimeType={};\nStartupNotify=true\n",
-        gui.display(),
+        "[Desktop Entry]\nType=Application\nName=Ustan\nComment=Install .deb, .rpm, .snap, AppImage, Flatpak, Windows and archive packages\nExec={} %U\nIcon=system-software-install\nTerminal=false\nCategories=System;PackageManager;\nMimeType={};\nStartupNotify=true\n",
+        exec_path(gui),
         all.join(";"),
     );
     std::fs::write(apps.join(DESKTOP), text)?;
@@ -205,6 +212,12 @@ pub fn unregister(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_paths_are_quoted_only_when_needed() {
+        assert_eq!(exec_path(Path::new("/usr/bin/ustan-gui")), "/usr/bin/ustan-gui");
+        assert_eq!(exec_path(Path::new("/opt/My Apps/ustan-gui")), "\"/opt/My Apps/ustan-gui\"");
+    }
 
     #[test]
     fn multi_type_lines_lose_our_types_but_keep_the_rest() {
