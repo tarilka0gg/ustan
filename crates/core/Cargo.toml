@@ -17,10 +17,10 @@ ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 serde_json = "1"
-bzip2 = "0.5"
+bzip2 = "0.6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_yaml = "0.9"
 sevenz-rust = { version = "0.6", default-features = false, features = ["compress"] }
-liblzma = { version = "0.4", default-features = false, features = ["static"] }
+liblzma = { version = "0.4", default-features = false }
 memmap2 = "0.9"
 sha3 = "0.10"

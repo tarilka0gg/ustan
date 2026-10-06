@@ -60,4 +60,7 @@ cargo test --workspace && (cd zig && zig build test)
 
 Gentoo: a live ebuild is in `packaging/gentoo/` (`app-misc/ustan-9999`).
 
-GPL-2.0-or-later.
+## License
+
+The source is GPL-2.0-or-later. The built binaries also contain the GPL-2.0-only crate `rust-lzo`
+(LZO for squashfs), so as a combined work they are distributed under the GPL-2.0.
