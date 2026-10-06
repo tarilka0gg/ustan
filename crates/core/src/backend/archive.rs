@@ -106,7 +106,8 @@ fn list(d: &Data) -> Result<Vec<Entry>> {
 }
 
 fn is_program(e: &Entry) -> bool {
-    e.mode & 0o111 != 0 && (&e.magic == b"\x7fELF" || &e.magic[..2] == b"#!")
+    // mode 0 = the format keeps no permissions (zip/7z made on Windows): trust the content instead
+    (e.mode & 0o111 != 0 || e.mode == 0) && (&e.magic == b"\x7fELF" || &e.magic[..2] == b"#!")
 }
 
 /// Pick the entry most likely to be "the" program of the archive.
@@ -374,6 +375,15 @@ mod tests {
         ];
         assert_eq!(main_win_exe(&v, "App-1.0").unwrap().path, PathBuf::from("App/App.exe"));
         assert!(main_win_exe(&[e("x/readme.txt", 5, b"hi!!")], "x").is_none());
+    }
+
+    #[test]
+    fn programs_in_archives_without_permissions_are_found_by_content() {
+        let e = |p: &str, mode: u32, magic: &[u8; 4]| Entry { path: PathBuf::from(p), mode, size: 1, magic: *magic };
+        assert!(is_program(&e("a/tool", 0, b"\x7fELF")), "no mode info + ELF magic");
+        assert!(is_program(&e("a/run.sh", 0, b"#!/b")));
+        assert!(!is_program(&e("a/README", 0, b"# Re")));
+        assert!(!is_program(&e("a/data.bin", 0o644, b"\x7fELF")), "an explicit non-executable mode still wins");
     }
 
     #[test]

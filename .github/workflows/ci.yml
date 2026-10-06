@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The GTK front end needs libadwaita 1.6+, which the runner image may not have; the core
+      # library and the CLI (everything with logic and tests) do not need it.
+      - name: Zig library tests
+        run: cd zig && zig build test
+      - name: Rust tests (core + CLI)
+        run: cargo test -p ustan-core -p ustan
