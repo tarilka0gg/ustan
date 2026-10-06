@@ -615,9 +615,8 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
             img.set_pixel_size(36);
             row.add_prefix(&img);
             let run = gtk::Button::builder().label("Запустити").valign(gtk::Align::Center).build();
-            run.connect_clicked(move |_| {
-                launch(&d);
-            });
+            let toasts = toasts.clone();
+            run.connect_clicked(move |_| launch_watched(&d, &toasts));
             actions.append(&run);
         }
         actions.append(&del);
@@ -730,6 +729,50 @@ fn launcher_of(m: &Manifest) -> Option<PathBuf> {
 
 fn launch(desktop: &std::path::Path) -> bool {
     launch_with(desktop, None)
+}
+
+/// Start a launcher entry ourselves and tell the user when it dies right away: `gio launch` returns
+/// at once and swallows the app's errors, so a broken program looked like a dead button.
+fn launch_watched(desktop: &std::path::Path, toasts: &adw::ToastOverlay) {
+    let Some(spec) = std::fs::read_to_string(desktop).ok().and_then(|t| ustan_core::desktop::launch_spec(&t)).filter(|s| !s.terminal) else {
+        launch(desktop);
+        return;
+    };
+    let log = Dirs::from_env().state.join("last-launch.log");
+    let toasts = toasts.clone();
+    glib::spawn_future_local(async move {
+        if let Err(msg) = spawn(move || run_watched(&spec, &log)).await {
+            let toast = adw::Toast::new(&msg);
+            toast.set_timeout(10);
+            toasts.add_toast(toast);
+        }
+    });
+}
+
+/// Run `spec` with its output in `log`; Err (with the last output lines) if it fails within 20 s.
+fn run_watched(spec: &ustan_core::desktop::LaunchSpec, log: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let name = std::path::Path::new(&spec.argv[0]).file_name().map_or_else(|| spec.argv[0].clone(), |n| n.to_string_lossy().into_owned());
+    let _ = std::fs::create_dir_all(log.parent().unwrap_or(log));
+    let out = std::fs::File::create(log).map_err(|e| format!("журнал запуску: {e}"))?;
+    let err = out.try_clone().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(&spec.argv[0]);
+    cmd.args(&spec.argv[1..]).stdin(std::process::Stdio::null()).stdout(out).stderr(err).process_group(0);
+    if let Some(d) = spec.cwd.as_ref().filter(|d| d.is_dir()) {
+        cmd.current_dir(d);
+    }
+    let started = std::time::Instant::now();
+    let mut child = cmd.spawn().map_err(|e| format!("«{name}» не запустилась: {e}"))?;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() || started.elapsed() > std::time::Duration::from_secs(20) {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(3).collect();
+    let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" ");
+    let tail: String = tail.chars().take(220).collect();
+    let code = status.code().map_or_else(|| "сигналом".to_string(), |c| format!("з кодом {c}"));
+    Err(if tail.is_empty() { format!("«{name}» завершилась {code}") } else { format!("«{name}» завершилась {code}: {tail}") })
 }
 
 /// `gio launch` starts the entry exactly like the menu does (Exec, Path, env, field codes);
@@ -908,4 +951,25 @@ fn fill_found(group: &adw::PreferencesGroup, bin: &adw::Bin, toasts: &adw::Toast
         }
         group.set_visible(!list.is_empty());
     });
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use ustan_core::desktop::LaunchSpec;
+
+    fn spec(script: &str) -> LaunchSpec {
+        LaunchSpec { argv: vec!["sh".into(), "-c".into(), script.into()], cwd: None, terminal: false }
+    }
+
+    #[test]
+    fn a_program_that_dies_right_away_is_reported_with_its_output() {
+        let log = std::env::temp_dir().join(format!("ustan-launch-{}.log", std::process::id()));
+        let msg = run_watched(&spec("echo first >&2; echo libfuse.so.2: cannot open >&2; exit 3"), &log).unwrap_err();
+        assert!(msg.contains("з кодом 3") && msg.contains("libfuse.so.2"), "{msg}");
+        assert!(run_watched(&spec("exit 0"), &log).is_ok());
+        let missing = LaunchSpec { argv: vec!["/nonexistent/app".into()], cwd: None, terminal: false };
+        assert!(run_watched(&missing, &log).unwrap_err().contains("не запустилась"));
+        let _ = std::fs::remove_file(&log);
+    }
 }

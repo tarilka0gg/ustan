@@ -123,6 +123,78 @@ pub fn name(text: &str) -> Option<String> {
     text.lines().find_map(|l| l.strip_prefix("Name=")).map(str::to_string)
 }
 
+/// What a launcher entry runs: the `Exec` command line (quotes resolved, field codes dropped),
+/// its `Path` and whether it wants a terminal.
+#[derive(Debug, PartialEq)]
+pub struct LaunchSpec {
+    pub argv: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub terminal: bool,
+}
+
+/// Parse the `[Desktop Entry]` group of a .desktop file into a [`LaunchSpec`] (None without `Exec`).
+pub fn launch_spec(text: &str) -> Option<LaunchSpec> {
+    let (mut exec, mut cwd, mut terminal) = (None, None, false);
+    for l in text.lines() {
+        let l = l.trim();
+        if l.starts_with('[') && l != "[Desktop Entry]" {
+            break;
+        }
+        match l.split_once('=') {
+            Some(("Exec", v)) if exec.is_none() => exec = Some(v.trim().to_string()),
+            Some(("Path", v)) => cwd = Some(PathBuf::from(v.trim())),
+            Some(("Terminal", v)) => terminal = v.trim() == "true",
+            _ => {}
+        }
+    }
+    let argv = split_exec(&exec?);
+    (!argv.is_empty()).then_some(LaunchSpec { argv, cwd, terminal })
+}
+
+/// Split an `Exec` value like the Desktop Entry spec says: double quotes group (with `\"`, `\\`,
+/// `` \` `` and `\$` escapes), `%f %F %u %U ...` field codes are dropped and `%%` is a literal `%`.
+fn split_exec(v: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted, mut has) = (Vec::new(), String::new(), false, false);
+    let mut it = v.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                has = true;
+            }
+            '\\' if quoted => {
+                if let Some(n) = it.next_if(|n| matches!(n, '"' | '\\' | '`' | '$')) {
+                    cur.push(n);
+                } else {
+                    cur.push(c);
+                }
+                has = true;
+            }
+            '%' => match it.next() {
+                Some('%') => {
+                    cur.push('%');
+                    has = true;
+                }
+                _ => {}
+            },
+            c if c.is_whitespace() && !quoted => {
+                if has || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has = true;
+            }
+        }
+    }
+    if has || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +241,25 @@ mod tests {
         assert!(t.contains("256x256/apps/foo.png"), "{t}");
         assert!(!t.contains("TryExec"));
         let _ = std::fs::remove_dir_all(r);
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn exec_quotes_field_codes_and_env_prefix() {
+        let t = "[Desktop Entry]\nName=x\nExec=env APPIMAGE_EXTRACT_AND_RUN=1 \"/home/u/my app/App.AppImage\" %U --flag\nPath=/tmp\n[Desktop Action a]\nExec=other\n";
+        let s = launch_spec(t).unwrap();
+        assert_eq!(s.argv, ["env", "APPIMAGE_EXTRACT_AND_RUN=1", "/home/u/my app/App.AppImage", "--flag"]);
+        assert_eq!(s.cwd, Some(PathBuf::from("/tmp")));
+        assert!(!s.terminal);
+    }
+
+    #[test]
+    fn exec_percent_escape_and_missing_exec() {
+        assert_eq!(launch_spec("[Desktop Entry]\nExec=sh -c \"echo 100%%\"\nTerminal=true\n").unwrap().argv, ["sh", "-c", "echo 100%"]);
+        assert!(launch_spec("[Desktop Entry]\nName=x\n").is_none());
     }
 }
