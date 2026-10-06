@@ -89,6 +89,14 @@ fn flatpak_has_update(app: &str) -> Result<bool> {
 }
 
 pub fn check(m: &Manifest) -> Result<Status> {
+    if m.kind == "snap" {
+        // the store is the source of truth for snaps, whether installed from it or from a file
+        return Ok(match backend::snap::store_info(&m.name) {
+            Ok(i) if m.version.as_deref() == Some(i.version.as_str()) => Status::UpToDate,
+            Ok(i) => Status::Available(i.version),
+            Err(e) => Status::Unknown(e.to_string()),
+        });
+    }
     if m.kind == "flatpak" {
         return Ok(if flatpak_has_update(&m.name)? { Status::Available("нова версія".into()) } else { Status::UpToDate });
     }
@@ -126,7 +134,14 @@ fn replace_from_file(m: &Manifest, file: &std::path::Path, dirs: &Dirs) -> Resul
     let b = backend::pick(file).ok_or_else(|| Error::Format("downloaded file type is not supported".into()))?;
     b.inspect(file)?;
     m.uninstall(&dirs.state)?;
-    b.install(file, dirs, &backend::Opts::default())
+    let mut new = b.install(file, dirs, &backend::Opts::default())?;
+    if m.runtime || !m.used_by.is_empty() {
+        // an updated runtime stays a runtime and keeps its users (they point at the same directory)
+        new.runtime = m.runtime;
+        new.used_by = m.used_by.clone();
+        new.save(&dirs.state)?;
+    }
+    Ok(new)
 }
 
 pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
@@ -137,6 +152,13 @@ pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
             .status()
             .map_err(|e| Error::Format(format!("cannot run flatpak: {e}")))?;
         return if st.success() { Ok(m.clone()) } else { Err(Error::Format(format!("flatpak update failed: {st}"))) };
+    }
+    if m.kind == "snap" {
+        let i = backend::snap::store_info(&m.name)?;
+        let file = fetch::download_checked(&i.url, &cache, &fetch::Expect::Sha3_384(i.sha3_384), &m.name)?.path;
+        let res = replace_from_file(m, &file, dirs);
+        let _ = std::fs::remove_file(&file);
+        return res;
     }
     if let Some(info) = &m.update_info {
         let (rel, _) = gh_release(info)?;

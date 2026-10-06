@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use ustan_core::{backend, discover, fetch, register, runner, update, dirs::Dirs, manifest::Manifest};
+use ustan_core::{autoupdate, backend, discover, fetch, register, runner, update, dirs::Dirs, manifest::Manifest};
 
 #[derive(Parser)]
 #[command(name = "ustan", about = "Windows-style app installer for Linux")]
@@ -53,6 +53,17 @@ enum Cmd {
         #[arg(long)]
         update: bool,
     },
+    /// Look for updates in the background: notify (or install, see `autoupdate`); runs until stopped
+    Watch {
+        /// One round, then exit (what a systemd timer or cron runs)
+        #[arg(long)]
+        once: bool,
+    },
+    /// Turn background update checks on or off
+    Autoupdate {
+        #[command(subcommand)]
+        cmd: Option<AutoCmd>,
+    },
     /// Show or choose the Wine used for Windows programs
     Runner {
         #[command(subcommand)]
@@ -71,6 +82,24 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AutoCmd {
+    /// Start checking (sets up a systemd timer or cron when the system has one)
+    Enable {
+        /// Install updates by themselves instead of only notifying
+        #[arg(long)]
+        apply: bool,
+        /// Hours between checks (default 12)
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Also start `ustan watch` at login by adding a line to the niri config
+        #[arg(long)]
+        niri: bool,
+    },
+    /// Stop checking and remove what `enable` set up
+    Disable,
 }
 
 #[derive(Subcommand)]
@@ -198,6 +227,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Cmd::Watch { once } => {
+            if !once {
+                eprintln!("слідкую за оновленнями (перша перевірка за 2 хв)…");
+            }
+            autoupdate::watch(&dirs, once)?;
+        }
+        Cmd::Autoupdate { cmd } => match cmd {
+            None => {
+                let c = ustan_core::config::load(&dirs).autoupdate;
+                println!("перевірка кожні {} год; оновлення: {}", c.interval_hours, if c.apply { "встановлюються самі" } else { "лише сповіщення" });
+            }
+            Some(AutoCmd::Enable { apply, interval, niri }) => {
+                println!("{}", autoupdate::enable(&dirs, apply, interval)?);
+                if niri {
+                    let cfg = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?).join(".config/niri/config.kdl");
+                    if autoupdate::niri_set(&cfg, true)? {
+                        println!("додано в {}: {}  (резервна копія поруч)", cfg.display(), autoupdate::NIRI_LINE);
+                    } else {
+                        println!("у конфігу niri цей рядок уже є");
+                    }
+                }
+            }
+            Some(AutoCmd::Disable) => println!("{}", autoupdate::disable(&dirs)?),
+        },
         Cmd::Runner { cmd } => match cmd {
             None => {
                 let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);

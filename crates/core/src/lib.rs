@@ -1,7 +1,9 @@
 pub mod ar;
+pub mod autoupdate;
 pub mod backend;
 pub mod desktop;
 pub mod discover;
+pub mod config;
 pub mod dirs;
 pub mod elf;
 pub mod fetch;

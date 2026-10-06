@@ -2,7 +2,6 @@
 //! Steam's Proton or a compatibility tool (GE-Proton, ...). Launchers do not hard-code the choice:
 //! they call a small wrapper script (`<state>/runner/wine`) that ustan rewrites when the runner changes.
 use crate::{dirs::Dirs, Error, Result};
-use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -15,20 +14,6 @@ pub struct Runner {
     pub wine: PathBuf,
     pub wineserver: PathBuf,
     rank: u8,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Config {
-    /// Runner name (as listed by `ustan runner`) or a path to a `wine`/`wine64` binary.
-    wine: Option<String>,
-}
-
-fn config_path(dirs: &Dirs) -> PathBuf {
-    dirs.state.join("config.toml")
-}
-
-fn load(dirs: &Dirs) -> Config {
-    std::fs::read_to_string(config_path(dirs)).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
 }
 
 fn from_root(name: String, root: &Path, rank: u8) -> Option<Runner> {
@@ -87,7 +72,7 @@ pub fn discover(home: &Path) -> Vec<Runner> {
 /// The runner to use: the configured one, else the best discovered.
 pub fn pick(dirs: &Dirs, home: &Path) -> Option<Runner> {
     let all = discover(home);
-    if let Some(want) = load(dirs).wine {
+    if let Some(want) = crate::config::load(dirs).wine {
         if let Some(r) = all.iter().find(|r| r.name == want) {
             return Some(r.clone());
         }
@@ -162,9 +147,9 @@ pub fn set(dirs: &Dirs, choice: &str) -> Result<Runner> {
         .cloned()
         .or_else(|| Path::new(choice).parent().and_then(Path::parent).and_then(|root| from_root(choice.to_string(), root, 0)))
         .ok_or_else(|| Error::Format(format!("невідомий runner `{choice}` (див. `ustan runner`)")))?;
-    std::fs::create_dir_all(&dirs.state)?;
-    let text = toml::to_string_pretty(&Config { wine: Some(choice.to_string()) }).map_err(|e| Error::Manifest(e.to_string()))?;
-    std::fs::write(config_path(dirs), text)?;
+    let mut c = crate::config::load(dirs);
+    c.wine = Some(choice.to_string());
+    crate::config::save(dirs, &c)?;
     write_wrappers(dirs, &r)?;
     Ok(r)
 }

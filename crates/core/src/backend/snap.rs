@@ -218,9 +218,15 @@ fn slot_reads(provider_root: &Path, slot: &str) -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
-/// Download URL and published SHA3-384 of the stable amd64 revision of a snap.
-fn store_info(name: &str) -> Result<(String, String)> {
-    let resp = ureq::get(&format!("https://api.snapcraft.io/v2/snaps/info/{name}?fields=download"))
+/// What the store publishes about the stable amd64 revision of a snap.
+pub struct StoreInfo {
+    pub url: String,
+    pub sha3_384: String,
+    pub version: String,
+}
+
+pub fn store_info(name: &str) -> Result<StoreInfo> {
+    let resp = ureq::get(&format!("https://api.snapcraft.io/v2/snaps/info/{name}?fields=download,version"))
         .set("Snap-Device-Series", "16")
         .call()
         .map_err(|e| Error::Format(format!("store: {e}")))?;
@@ -231,9 +237,12 @@ fn store_info(name: &str) -> Result<(String, String)> {
         .find(|c| c["channel"]["architecture"] == "amd64" && c["channel"]["name"] == "stable")
         .or_else(|| maps.iter().find(|c| c["channel"]["architecture"] == "amd64"))
         .ok_or_else(|| Error::Format(format!("no amd64 build of `{name}`")))?;
-    let url = pick["download"]["url"].as_str().ok_or_else(|| Error::Format("store gave no download url".into()))?;
-    let sha3 = pick["download"]["sha3-384"].as_str().ok_or_else(|| Error::Format("store gave no checksum".into()))?;
-    Ok((url.to_string(), sha3.to_string()))
+    let get = |v: &serde_json::Value, what: &str| v.as_str().map(str::to_string).ok_or_else(|| Error::Format(format!("store gave no {what}")));
+    Ok(StoreInfo {
+        url: get(&pick["download"]["url"], "download url")?,
+        sha3_384: get(&pick["download"]["sha3-384"], "checksum")?,
+        version: get(&pick["version"], "version")?,
+    })
 }
 
 /// The provider snap, installed under ustan like any other app (downloaded first if needed).
@@ -243,7 +252,8 @@ fn ensure_provider(name: &str, dirs: &Dirs, opts: &Opts) -> Result<PathBuf> {
         return Ok(root);
     }
     crate::progress::status(format!("Завантажую runtime-снап {name}…"));
-    let (url, sha3) = store_info(name)?;
+    let info = store_info(name)?;
+    let (url, sha3) = (info.url, info.sha3_384);
     // the store publishes SHA3-384 of every revision: a tampered or truncated download is rejected
     let file = crate::fetch::download_checked(&url, &dirs.state.join("cache"), &crate::fetch::Expect::Sha3_384(sha3), name)?.path;
     let file = {
