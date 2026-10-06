@@ -65,7 +65,9 @@ impl Backend for Arch {
             |root| {
                 let mut ar = tar::Archive::new(tar.as_slice());
                 ar.set_preserve_permissions(true);
+                crate::progress::status("Розпаковую…");
                 for e in ar.entries()? {
+                    crate::progress::check()?;
                     let mut e = e?;
                     // .PKGINFO, .MTREE, .BUILDINFO, .INSTALL...: package metadata, not files.
                     if e.path()?.components().next().is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.')) {

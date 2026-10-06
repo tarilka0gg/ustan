@@ -18,6 +18,8 @@ struct Release {
     /// What identifies this release (tag, or asset timestamp for rolling tags).
     marker: String,
     url: String,
+    /// GitHub publishes `sha256:<hex>` for release assets; used to verify the download.
+    sha256: Option<String>,
 }
 
 fn glob(pat: &str, s: &str) -> bool {
@@ -74,7 +76,8 @@ fn gh_release(info: &str) -> Result<(Release, bool)> {
         .ok_or_else(|| Error::Format("release has no marker".into()))?
         .to_string();
     let dl = asset["browser_download_url"].as_str().ok_or_else(|| Error::Format("asset has no url".into()))?.to_string();
-    Ok((Release { marker, url: dl }, latest))
+    let sha256 = asset["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_string);
+    Ok((Release { marker, url: dl, sha256 }, latest))
 }
 
 fn flatpak_has_update(app: &str) -> Result<bool> {
@@ -137,7 +140,7 @@ pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
     }
     if let Some(info) = &m.update_info {
         let (rel, _) = gh_release(info)?;
-        let file = fetch::download(&rel.url, &cache, None)?;
+        let file = fetch::download_checked(&rel.url, &cache, &rel.sha256.clone().map(fetch::Expect::Sha256).unwrap_or_default(), &m.name)?.path;
         let res = replace_from_file(m, &file, dirs);
         let _ = std::fs::remove_file(&file);
         let mut new = res?;
@@ -146,7 +149,8 @@ pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
         return Ok(new);
     }
     if let Some(url) = &m.url {
-        let (file, etag) = fetch::download_with_validator(url, &cache, None)?;
+        let got = fetch::download_auto(url, &cache, &m.name)?;
+        let (file, etag) = (got.path, got.validator);
         let res = replace_from_file(m, &file, dirs);
         let _ = std::fs::remove_file(&file);
         let mut new = res?;
@@ -170,7 +174,7 @@ pub fn apply_found(f: &crate::discover::Found, dirs: &Dirs) -> Result<Option<Str
     use std::os::unix::fs::PermissionsExt;
     let info = f.update_info.as_deref().ok_or_else(|| Error::Format("у цього AppImage немає інформації про оновлення".into()))?;
     let (rel, _) = gh_release(info)?;
-    let file = fetch::download(&rel.url, &dirs.state.join("cache"), None)?;
+    let file = fetch::download_checked(&rel.url, &dirs.state.join("cache"), &rel.sha256.clone().map(fetch::Expect::Sha256).unwrap_or_default(), &f.name)?.path;
     let res = (|| -> Result<Option<String>> {
         if !backend::appimage::is_appimage(&file) {
             return Err(Error::Format("завантажений файл не є AppImage".into()));

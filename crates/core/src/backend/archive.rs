@@ -232,7 +232,9 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
         Data::Tar(t) => {
             let mut ar = tar::Archive::new(t.as_slice());
             ar.set_preserve_permissions(true);
+            crate::progress::status("Розпаковую…");
             for e in ar.entries()? {
+                crate::progress::check()?;
                 e?.unpack_in(root)?;
             }
         }
@@ -240,6 +242,9 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
             let canon = root.canonicalize()?;
             let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;
             r.for_each_entries(|e, rd| {
+                if crate::progress::cancelled() {
+                    return Err(sevenz_rust::Error::other("скасовано"));
+                }
                 let Some(rel) = safe_rel(e.name()) else {
                     std::io::copy(rd, &mut std::io::sink())?;
                     return Ok(true);
@@ -262,6 +267,7 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
         Data::Zip(z) => {
             let mut zr = zip::ZipArchive::new(Cursor::new(z)).map_err(|e| Error::Format(format!("zip: {e}")))?;
             for i in 0..zr.len() {
+                crate::progress::check()?;
                 let mut f = zr.by_index(i).map_err(|e| Error::Format(format!("zip: {e}")))?;
                 let Some(rel) = f.enclosed_name() else { continue };
                 let dst = root.join(rel);

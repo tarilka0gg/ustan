@@ -8,6 +8,7 @@ pub mod fetch;
 pub mod lnk;
 pub mod manifest;
 pub mod pe;
+pub mod progress;
 pub mod update;
 pub mod register;
 pub mod runner;
@@ -20,6 +21,8 @@ pub enum Error {
     Manifest(String),
     #[error("{0}")]
     Format(String),
+    #[error("скасовано")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

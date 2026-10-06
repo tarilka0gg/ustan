@@ -167,7 +167,9 @@ export PATH="$SNAP/.ustan-run/bin:$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/
 
 fn extract(fs: &Fs, root: &Path) -> Result<()> {
     let canon = root.canonicalize()?;
+    crate::progress::status("Розпаковую…");
     for n in fs.files() {
+        crate::progress::check()?;
         let Some(rel) = safe_rel(&n.fullpath.to_string_lossy()) else { continue };
         let mode = (n.header.permissions as u32) & 0o777;
         match &n.inner {
@@ -216,8 +218,8 @@ fn slot_reads(provider_root: &Path, slot: &str) -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
-/// Download URL of the stable amd64 revision of a snap from the store.
-fn store_url(name: &str) -> Result<String> {
+/// Download URL and published SHA3-384 of the stable amd64 revision of a snap.
+fn store_info(name: &str) -> Result<(String, String)> {
     let resp = ureq::get(&format!("https://api.snapcraft.io/v2/snaps/info/{name}?fields=download"))
         .set("Snap-Device-Series", "16")
         .call()
@@ -229,7 +231,9 @@ fn store_url(name: &str) -> Result<String> {
         .find(|c| c["channel"]["architecture"] == "amd64" && c["channel"]["name"] == "stable")
         .or_else(|| maps.iter().find(|c| c["channel"]["architecture"] == "amd64"))
         .ok_or_else(|| Error::Format(format!("no amd64 build of `{name}`")))?;
-    pick["download"]["url"].as_str().map(str::to_string).ok_or_else(|| Error::Format("store gave no download url".into()))
+    let url = pick["download"]["url"].as_str().ok_or_else(|| Error::Format("store gave no download url".into()))?;
+    let sha3 = pick["download"]["sha3-384"].as_str().ok_or_else(|| Error::Format("store gave no checksum".into()))?;
+    Ok((url.to_string(), sha3.to_string()))
 }
 
 /// The provider snap, installed under ustan like any other app (downloaded first if needed).
@@ -238,8 +242,10 @@ fn ensure_provider(name: &str, dirs: &Dirs, opts: &Opts) -> Result<PathBuf> {
     if root.join("meta/snap.yaml").exists() {
         return Ok(root);
     }
-    eprintln!("завантажую runtime-снап `{name}` (може бути кілька сотень МБ)…");
-    let file = crate::fetch::download(&store_url(name)?, &dirs.state.join("cache"), None)?;
+    crate::progress::status(format!("Завантажую runtime-снап {name}…"));
+    let (url, sha3) = store_info(name)?;
+    // the store publishes SHA3-384 of every revision: a tampered or truncated download is rejected
+    let file = crate::fetch::download_checked(&url, &dirs.state.join("cache"), &crate::fetch::Expect::Sha3_384(sha3), name)?.path;
     let file = {
         // the store URL has no extension; give it one so the snap backend recognises it
         let renamed = file.with_file_name(format!("{}.snap", slug(name)));

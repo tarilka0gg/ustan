@@ -68,7 +68,28 @@ enum RunnerCmd {
     Use { name: String },
 }
 
+/// Print downloads as `name  42% (12.3 / 29.2 МБ)` on one line, other steps as their own line.
+fn install_progress_hook() {
+    use std::io::{IsTerminal, Write};
+    use ustan_core::progress::{self, Event};
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    progress::set_hook(|e| match e {
+        Event::Status(s) => eprintln!("\r\x1b[2K{s}"),
+        Event::Download { name, done, total } => {
+            let mb = |b: u64| b as f64 / 1_048_576.0;
+            match total {
+                Some(t) if t > 0 => eprint!("\r\x1b[2K{name}  {:>3}% ({:.1} / {:.1} МБ)", done * 100 / t, mb(done), mb(t)),
+                _ => eprint!("\r\x1b[2K{name}  {:.1} МБ", mb(done)),
+            }
+            let _ = std::io::stderr().flush();
+        }
+    });
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    install_progress_hook();
     let dirs = Dirs::from_env();
     let dir = dirs.state.clone();
     match Cli::parse().cmd {
@@ -80,10 +101,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Install { source, sha256, installer, installer_args } => {
             let mut etag = None;
             let file = if fetch::is_url(&source) {
-                let (f, e) = fetch::download_with_validator(&source, &dirs.state.join("cache"), sha256.as_deref())?;
-                eprintln!("downloaded {}", f.display());
-                etag = e;
-                f
+                let expect = match &sha256 {
+                    Some(h) => fetch::Expect::Sha256(h.clone()),
+                    None => fetch::sidecar_sha256(&source).map(fetch::Expect::Sha256).unwrap_or_default(),
+                };
+                let got = fetch::download_checked(&source, &dirs.state.join("cache"), &expect, &source.rsplit('/').next().unwrap_or("файл").to_string())?;
+                eprintln!();
+                match got.verified {
+                    Some(how) => eprintln!("{how}: перевірено"),
+                    None => eprintln!("увага: контрольної суми немає ({}.sha256 не знайдено), завантаження не перевірено", source.split(['?', '#']).next().unwrap_or(&source)),
+                }
+                etag = got.validator;
+                got.path
             } else {
                 PathBuf::from(&source)
             };

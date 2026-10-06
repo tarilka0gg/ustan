@@ -79,7 +79,9 @@ impl Backend for Deb {
                 // unpack_in refuses entries that escape `root`.
                 let mut ar = tar::Archive::new(tar_bytes.as_slice());
                 ar.set_preserve_permissions(true);
+                crate::progress::status("Розпаковую…");
                 for e in ar.entries()? {
+                    crate::progress::check()?;
                     e?.unpack_in(root)?;
                 }
                 Ok(())

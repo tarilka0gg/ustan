@@ -60,7 +60,9 @@ pub fn extract_cpio(data: &[u8], root: &Path) -> Result<()> {
     let mut pos = 0usize;
     // Hard links: every entry but the last of a group has no data; the last one carries it.
     let mut pending: HashMap<u32, Vec<PathBuf>> = HashMap::new();
+    crate::progress::status("Розпаковую…");
     loop {
+        crate::progress::check()?;
         if pos + 110 > data.len() {
             return Err(Error::Format("truncated cpio".into()));
         }

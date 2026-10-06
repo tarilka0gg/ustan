@@ -2,6 +2,7 @@ use adw::prelude::*;
 use adw::{gdk, gio, glib, gtk};
 use std::path::PathBuf;
 use ustan_core::backend::{self, Info, Opts};
+use ustan_core::progress::{self, Event};
 use ustan_core::{dirs::Dirs, discover::{self, Found}, fetch, manifest::Manifest, update};
 
 const APP_ID: &str = "io.github.tarilka0gg.Ustan";
@@ -30,20 +31,23 @@ struct Prepared {
     existing: Option<Manifest>,
     /// Source URL and its HTTP validator, when downloaded.
     origin: Option<(String, Option<String>)>,
+    /// Which checksum matched the download (None: nothing to compare against).
+    verified: Option<&'static str>,
 }
 
 fn prepare(src: &str) -> Result<Prepared, String> {
     let dirs = Dirs::from_env();
-    let (path, downloaded, origin) = if fetch::is_url(src) {
-        let (p, etag) = fetch::download_with_validator(src, &dirs.state.join("cache"), None).map_err(|e| e.to_string())?;
-        (p, true, Some((src.to_string(), etag)))
+    let (path, downloaded, origin, verified) = if fetch::is_url(src) {
+        let label = src.rsplit('/').next().unwrap_or("файл").to_string();
+        let got = fetch::download_auto(src, &dirs.state.join("cache"), &label).map_err(|e| e.to_string())?;
+        (got.path, true, Some((src.to_string(), got.validator)), got.verified)
     } else {
-        (PathBuf::from(src), false, None)
+        (PathBuf::from(src), false, None, None)
     };
     let b = backend::pick(&path).ok_or("Цей тип файлу не підтримується")?;
     let info = b.inspect(&path).map_err(|e| e.to_string())?;
     let existing = Manifest::load(&dirs.state, &info.id).ok();
-    Ok(Prepared { path, info, downloaded, existing, origin })
+    Ok(Prepared { path, info, downloaded, existing, origin, verified })
 }
 
 fn cleanup(p: &Prepared) {
@@ -67,7 +71,14 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, S
     }
     cleanup(p);
     // notes (e.g. missing libraries) are shown under the name on the result page
-    Ok(m.notes.iter().fold(m.name.clone(), |acc, n| format!("{acc}\n⚠ {n}")))
+    let mut text = m.notes.iter().fold(m.name.clone(), |acc, n| format!("{acc}\n⚠ {n}"));
+    if p.origin.is_some() {
+        match p.verified {
+            Some(how) => text.push_str(&format!("\n✓ {how} перевірено")),
+            None => text.push_str("\n⚠ Контрольної суми немає: завантаження не перевірено"),
+        }
+    }
+    Ok(text)
 }
 
 fn run_remove(p: &Prepared) -> Result<String, String> {
@@ -88,6 +99,58 @@ fn page(title: &str, desc: &str) -> adw::StatusPage {
     adw::StatusPage::builder().title(title).description(desc).build()
 }
 
+/// A page with a progress bar and a line of text, fed by [`follow_progress`].
+struct Prog {
+    page: adw::StatusPage,
+    bar: gtk::ProgressBar,
+    label: gtk::Label,
+}
+
+fn progress_page(title: &str, desc: &str) -> Prog {
+    let page = page(title, desc);
+    let bar = gtk::ProgressBar::builder().width_request(360).build();
+    let label = gtk::Label::builder().css_classes(["dim-label"]).wrap(true).justify(gtk::Justification::Center).build();
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    col.append(&bar);
+    col.append(&label);
+    let clamp = adw::Clamp::builder().maximum_size(420).child(&col).build();
+    page.set_child(Some(&clamp));
+    Prog { page, bar, label }
+}
+
+/// Route the core's progress events into `p` until [`progress::clear_hook`] is called.
+fn follow_progress(p: &Prog) {
+    let (tx, rx) = async_channel::unbounded::<Event>();
+    progress::set_hook(move |e| {
+        let _ = tx.send_blocking(e);
+    });
+    let (bar, label) = (p.bar.clone(), p.label.clone());
+    glib::spawn_future_local(async move {
+        while let Ok(e) = rx.recv().await {
+            match e {
+                Event::Status(s) => {
+                    label.set_text(&s);
+                    bar.pulse();
+                }
+                Event::Download { name, done, total } => {
+                    let mb = |b: u64| b as f64 / 1_048_576.0;
+                    match total {
+                        Some(t) if t > 0 => {
+                            bar.set_fraction(done as f64 / t as f64);
+                            label.set_text(&format!("Завантажую {name}: {:.1} з {:.1} МБ", mb(done), mb(t)));
+                        }
+                        _ => {
+                            bar.pulse();
+                            label.set_text(&format!("Завантажую {name}: {:.1} МБ", mb(done)));
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[allow(dead_code)]
 fn spinner_page(title: &str, desc: &str) -> adw::StatusPage {
     let p = page(title, desc);
     p.set_child(Some(&adw::Spinner::new()));
@@ -134,6 +197,8 @@ struct Bar {
     remove: gtk::Button,
     main: gtk::Button,
     close: gtk::Button,
+    /// True while a job runs: the Cancel button then cancels it instead of closing the window.
+    busy: std::cell::Cell<bool>,
 }
 
 impl Bar {
@@ -149,10 +214,13 @@ impl Bar {
         root.pack_end(&main);
         root.pack_end(&close);
         let revealer = gtk::Revealer::builder().transition_type(gtk::RevealerTransitionType::SlideUp).transition_duration(260).child(&root).build();
-        Bar { revealer, cancel, remove, main, close }
+        Bar { revealer, cancel, remove, main, close, busy: std::cell::Cell::new(false) }
     }
 
     fn show_ready(&self, has_existing: bool) {
+        self.busy.set(false);
+        self.cancel.set_label("Скасувати");
+        self.cancel.set_sensitive(true);
         self.revealer.set_reveal_child(true);
         self.cancel.set_visible(true);
         self.remove.set_visible(has_existing);
@@ -160,11 +228,19 @@ impl Bar {
         self.close.set_visible(false);
     }
 
-    fn show_busy(&self) {
-        self.revealer.set_reveal_child(false);
+    fn show_busy(&self, cancelable: bool) {
+        self.busy.set(true);
+        self.cancel.set_label("Скасувати");
+        self.cancel.set_sensitive(true);
+        self.cancel.set_visible(cancelable);
+        for b in [&self.remove, &self.main, &self.close] {
+            b.set_visible(false);
+        }
+        self.revealer.set_reveal_child(cancelable);
     }
 
     fn show_end(&self, label: &str, ok: bool) {
+        self.busy.set(false);
         self.revealer.set_reveal_child(true);
         for b in [&self.cancel, &self.remove, &self.main] {
             b.set_visible(false);
@@ -184,19 +260,32 @@ fn install_window(app: &adw::Application, src: String) {
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeft).transition_duration(280).build();
     view.set_content(Some(&stack));
     win.set_content(Some(&view));
-    stack.add_named(&spinner_page("Читаю пакет…", &src), Some("loading"));
+    let loading = progress_page("Читаю пакет…", &src);
+    stack.add_named(&loading.page, Some("loading"));
     win.present();
 
     let w = win.clone();
     bar.cancel.connect_clicked({
-        let w = w.clone();
-        move |_| w.close()
+        let (w, bar) = (w.clone(), bar.clone());
+        move |_| {
+            if bar.busy.get() {
+                progress::cancel();
+                bar.cancel.set_sensitive(false);
+                bar.cancel.set_label("Скасовую…");
+            } else {
+                w.close()
+            }
+        }
     });
     bar.close.connect_clicked(move |_| w.close());
 
     glib::spawn_future_local(async move {
         let src2 = src.clone();
-        match spawn(move || prepare(&src2)).await {
+        progress::reset();
+        follow_progress(&loading);
+        let prepared = spawn(move || prepare(&src2)).await;
+        progress::clear_hook();
+        match prepared {
             Err(e) => {
                 let p = page("Не вдалося відкрити файл", &e);
                 p.set_icon_name(Some("dialog-error-symbolic"));
@@ -230,7 +319,6 @@ fn install_window(app: &adw::Application, src: String) {
                     ready.set_child(Some(&clamp));
                 }
                 stack.add_named(&ready, Some("ready"));
-                stack.add_named(&spinner_page("Зачекай…", &prep.info.name), Some("busy"));
                 stack.set_visible_child_name("ready");
                 bar.main.set_label(if existing { "Перевстановити" } else { "Встановити" });
                 bar.show_ready(existing);
@@ -238,9 +326,16 @@ fn install_window(app: &adw::Application, src: String) {
                 // Run `job` off-thread, then show a result page.
                 let run = std::rc::Rc::new({
                     let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
-                    move |job: Box<dyn FnOnce(&Prepared) -> Result<String, String> + Send>, ok_title: &'static str, err_title: &'static str| {
+                    move |job: Box<dyn FnOnce(&Prepared) -> Result<String, String> + Send>, ok_title: &'static str, err_title: &'static str, cancelable: bool| {
+                        let prog = progress_page("Зачекай…", &prep.info.name);
+                        if let Some(old) = stack.child_by_name("busy") {
+                            stack.remove(&old);
+                        }
+                        stack.add_named(&prog.page, Some("busy"));
                         stack.set_visible_child_name("busy");
-                        bar.show_busy();
+                        bar.show_busy(cancelable);
+                        progress::reset();
+                        follow_progress(&prog);
                         let (stack, prep, bar) = (stack.clone(), prep.clone(), bar.clone());
                         glib::spawn_future_local(async move {
                             let r = spawn({
@@ -248,8 +343,14 @@ fn install_window(app: &adw::Application, src: String) {
                                 move || job(&prep)
                             })
                             .await;
+                            progress::clear_hook();
                             let ok = r.is_ok();
                             let end = match r {
+                                Err(e) if e == "скасовано" => {
+                                    let p = page("Скасовано", "Нічого не змінено");
+                                    p.set_icon_name(Some("dialog-information-symbolic"));
+                                    p
+                                }
                                 Ok(name) => {
                                     let p = page(ok_title, &name);
                                     p.set_icon_name(Some("emblem-ok-symbolic"));
@@ -272,10 +373,20 @@ fn install_window(app: &adw::Application, src: String) {
                     let installer = installer.clone();
                     bar.main.connect_clicked(move |_| {
                         let inst = installer.is_active();
-                        run(Box::new(move |p| run_install(p, inst, existing)), if existing { "Перевстановлено" } else { "Встановлено" }, "Не вдалося встановити");
+                        run(Box::new(move |p| run_install(p, inst, existing)), if existing { "Перевстановлено" } else { "Встановлено" }, "Не вдалося встановити", !existing);
                     });
                 }
-                bar.remove.connect_clicked(move |_| run(Box::new(run_remove), "Видалено", "Не вдалося видалити"));
+                bar.remove.connect_clicked(move |_| run(Box::new(run_remove), "Видалено", "Не вдалося видалити", false));
+
+                // Test hooks (used by automated checks; harmless when the variables are unset):
+                // press "Install" by itself, and optionally press "Cancel" after N milliseconds.
+                if std::env::var_os("USTAN_GUI_AUTOSTART").is_some() {
+                    bar.main.emit_clicked();
+                    if let Some(ms) = std::env::var("USTAN_GUI_AUTOCANCEL_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                        let bar = bar.clone();
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || bar.cancel.emit_clicked());
+                    }
+                }
             }
         }
     });
