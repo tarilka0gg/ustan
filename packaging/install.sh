@@ -53,10 +53,17 @@ install)
     fi
     refresh_caches
     say "$NAME installed under $DESTDIR$PREFIX"
+    # make ustan the handler of its file types for the user who installed it (best effort)
+    if [ -z "$DESTDIR" ] && [ "$(id -u)" != 0 ] && [ -x "$PREFIX/bin/ustan" ]; then
+        "$PREFIX/bin/ustan" register || say "could not register file types; run '$PREFIX/bin/ustan register' yourself"
+    elif [ -z "$DESTDIR" ]; then
+        say "installed system-wide: each user gets the file types registered on the first start of ustan-gui, or run 'ustan register'"
+    fi
     [ ! -f "$HERE/POST-INSTALL.txt" ] || cat "$HERE/POST-INSTALL.txt"
     ;;
 uninstall)
     [ -f "$MANIFEST" ] || { say "no manifest at $MANIFEST: nothing recorded to remove" >&2; exit 1; }
+    [ -z "$DESTDIR" ] && [ "$(id -u)" != 0 ] && [ -x "$PREFIX/bin/ustan" ] && "$PREFIX/bin/ustan" unregister || true
     while IFS= read -r f; do rm -f -- "$f"; d=$(dirname "$f"); rmdir -p --ignore-fail-on-non-empty "$d" 2>/dev/null || true; done < "$MANIFEST"
     refresh_caches
     say "$NAME removed"

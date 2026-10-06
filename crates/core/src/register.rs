@@ -74,12 +74,56 @@ fn backup_path(home: &Path) -> std::path::PathBuf {
     home.join(".local/share/ustan/mime-backup.toml")
 }
 
+/// Some tools (PortProton) write one line for several types: `type1;type2;=app.desktop`. `xdg-mime`
+/// reads those as a default for every listed type, so they would keep winning over our own lines.
+/// Remove our types from such lines (keeping the others) and return who had them: `type -> desktop`.
+/// The original file is saved once as `mimeapps.list.pre-ustan`.
+fn split_multi_type_lines(home: &Path, ours: &[&str]) -> std::collections::BTreeMap<String, String> {
+    let mut prev = std::collections::BTreeMap::new();
+    let path = home.join(".config/mimeapps.list");
+    let Ok(text) = std::fs::read_to_string(&path) else { return prev };
+    let mut out = String::new();
+    let mut changed = false;
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some((k, v)) if k.contains(';') && k.split(';').any(|t| ours.contains(&t)) => {
+                let desktop = v.split(';').next().unwrap_or("").trim().to_string();
+                let (hit, rest): (Vec<&str>, Vec<&str>) = k.split(';').filter(|t| !t.is_empty()).partition(|t| ours.contains(t));
+                for t in hit {
+                    if !desktop.is_empty() {
+                        prev.insert(t.to_string(), desktop.clone());
+                    }
+                }
+                changed = true;
+                if !rest.is_empty() {
+                    out.push_str(&format!("{};={v}\n", rest.join(";")));
+                }
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    if changed {
+        let bak = path.with_file_name("mimeapps.list.pre-ustan");
+        if !bak.exists() {
+            let _ = std::fs::copy(&path, bak);
+        }
+        let _ = std::fs::write(&path, out);
+    }
+    prev
+}
+
 /// Who handled each type before us (`mime = "other.desktop"`), so `unregister` can give it back.
 /// The first answer wins: registering twice must not record *ourselves* as the previous handler.
-fn remember_previous(home: &Path, types: &[&str]) {
+fn remember_previous(home: &Path, types: &[&str], known: std::collections::BTreeMap<String, String>) {
     let path = backup_path(home);
     let mut saved: std::collections::BTreeMap<String, String> =
         std::fs::read_to_string(&path).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
+    for (t, d) in known {
+        saved.entry(t).or_insert(d);
+    }
     for t in types {
         if saved.contains_key(*t) {
             continue;
@@ -117,7 +161,8 @@ pub fn register(home: &Path, gui: &Path, with_exe: bool, with_archives: bool) ->
     );
     std::fs::write(apps.join(DESKTOP), text)?;
     let _ = tool(home, "update-desktop-database", &[apps.to_str().unwrap()]);
-    remember_previous(home, &all);
+    let from_lines = split_multi_type_lines(home, &all);
+    remember_previous(home, &all, from_lines);
     let mut args = vec!["default", DESKTOP];
     args.extend(all.iter().copied());
     tool(home, "xdg-mime", &args)
@@ -161,6 +206,25 @@ pub fn unregister(home: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn multi_type_lines_lose_our_types_but_keep_the_rest() {
+        let h = std::env::temp_dir().join(format!("ustan-multi-{}", std::process::id()));
+        std::fs::create_dir_all(h.join(".config")).unwrap();
+        std::fs::write(
+            h.join(".config/mimeapps.list"),
+            "[Default Applications]\nimage/png=imv.desktop\napplication/x-ms-dos-executable;application/x-wine-extension-msp;application/x-msi;text/win-bat;=PortProton.desktop\napplication/x-msdos-program;application/x-wine-extension-msp;=OnlyOthers.desktop\n",
+        )
+        .unwrap();
+        let prev = split_multi_type_lines(&h, &["application/x-ms-dos-executable", "application/x-msi"]);
+        assert_eq!(prev.get("application/x-msi").map(String::as_str), Some("PortProton.desktop"));
+        let t = std::fs::read_to_string(h.join(".config/mimeapps.list")).unwrap();
+        assert!(t.contains("application/x-wine-extension-msp;text/win-bat;=PortProton.desktop"), "{t}");
+        assert!(!t.contains("x-ms-dos-executable") && !t.contains("application/x-msi"), "{t}");
+        assert!(t.contains("image/png=imv.desktop") && t.contains("OnlyOthers.desktop"), "untouched lines stay: {t}");
+        assert!(h.join(".config/mimeapps.list.pre-ustan").exists(), "the original is kept");
+        let _ = std::fs::remove_dir_all(h);
+    }
+
     /// register/unregister in a scratch HOME: the old handler must come back, new types vanish.
     #[test]
     fn unregister_restores_the_previous_defaults() {
@@ -182,7 +246,9 @@ mod tests {
 
         unregister(&h).unwrap();
         assert_eq!(query("application/vnd.flatpak"), "prev-handler.desktop");
-        assert_ne!(query("application/x-rpm"), DESKTOP);
+        // the explicit entry is gone (xdg-mime may still answer with a packaged .desktop that lists the type)
+        let list = std::fs::read_to_string(h.join(".config/mimeapps.list")).unwrap();
+        assert!(!list.contains(&format!("application/x-rpm={DESKTOP}")), "{list}");
         let _ = std::fs::remove_dir_all(h);
     }
 }

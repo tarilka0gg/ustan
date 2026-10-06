@@ -193,11 +193,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
             register::register(&home, &gui, !skip_exe, !skip_archives)?;
+            let mut c = ustan_core::config::load(&dirs);
+            c.registered = true;
+            ustan_core::config::save(&dirs, &c)?;
             println!("registered {}", gui.display());
         }
         Cmd::Unregister => {
             let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
             register::unregister(&home)?;
+            // an explicit opt-out: the GUI must not register itself again on its next start
+            let mut c = ustan_core::config::load(&dirs);
+            c.registered = true;
+            ustan_core::config::save(&dirs, &c)?;
         }
         Cmd::Update { id, check } => {
             let apps: Vec<Manifest> = match id {

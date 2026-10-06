@@ -61,3 +61,31 @@ src_install() {
 	insinto /usr/share/icons/hicolor/scalable/apps
 	doins packaging/icons/ustan.svg
 }
+
+# Make ustan the default handler of its file types for every real user, once (first install only,
+# so later changes the user makes are not undone); undo it when the package is removed for good.
+ustan_for_each_user() {
+	local u uid h
+	while IFS=: read -r u _ uid _ _ h _; do
+		[[ ${uid} -ge 1000 && ${uid} -lt 60000 && ${h} == /home/* && -d ${h} ]] || continue
+		einfo "ustan ${1} for ${u}"
+		su -s /bin/sh "${u}" -c "ustan ${1}" || ewarn "ustan ${1} failed for ${u}"
+	done < /etc/passwd
+}
+
+pkg_postinst() {
+	xdg_pkg_postinst
+	if use gui && [[ -z ${REPLACING_VERSIONS} ]]; then
+		ustan_for_each_user register
+	fi
+}
+
+pkg_prerm() {
+	if use gui && [[ -z ${REPLACED_BY_VERSION} ]]; then
+		ustan_for_each_user unregister
+	fi
+}
+
+pkg_postrm() {
+	xdg_pkg_postrm
+}

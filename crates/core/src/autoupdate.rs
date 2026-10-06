@@ -14,7 +14,7 @@ pub struct Summary {
 }
 
 /// Desktop notification through `notify-send` (or `$USTAN_NOTIFY_CMD`, which tests use).
-fn notify(title: &str, body: &str) {
+pub fn notify(title: &str, body: &str) {
     let cmd = std::env::var("USTAN_NOTIFY_CMD").unwrap_or_else(|_| "notify-send".into());
     let _ = Command::new(cmd).args(["-a", "ustan", "-i", "system-software-update", title, body]).status();
 }

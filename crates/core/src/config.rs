@@ -24,6 +24,8 @@ pub struct Config {
     /// Runner name (as listed by `ustan runner`) or a path to a `wine`/`wine64` binary.
     pub wine: Option<String>,
     pub autoupdate: AutoUpdate,
+    /// ustan has made itself the default handler once (or the user opted out): never do it unasked again.
+    pub registered: bool,
 }
 
 pub fn path(dirs: &Dirs) -> PathBuf {

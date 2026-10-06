@@ -7,7 +7,24 @@ use ustan_core::{dirs::Dirs, discover::{self, Found}, fetch, manifest::Manifest,
 
 const APP_ID: &str = "io.github.tarilka0gg.Ustan";
 
+/// First start after installing: make ustan the handler of its file types, once. A later
+/// `ustan unregister` is remembered, so this never overrides the user's choice again.
+fn register_on_first_start() {
+    let dirs = Dirs::from_env();
+    let mut cfg = ustan_core::config::load(&dirs);
+    if cfg.registered {
+        return;
+    }
+    let (Some(home), Ok(exe)) = (std::env::var_os("HOME").map(PathBuf::from), std::env::current_exe()) else { return };
+    if ustan_core::register::register(&home, &exe, true, true).is_ok() {
+        cfg.registered = true;
+        let _ = ustan_core::config::save(&dirs, &cfg);
+        ustan_core::autoupdate::notify("ustan тепер відкриває ці формати", "Пакети, AppImage, .exe/.msi, .jar та архіви. Повернути як було: ustan unregister");
+    }
+}
+
 fn main() -> glib::ExitCode {
+    std::thread::spawn(register_on_first_start);
     // Without a session bus GTK falls back to the program name for the Wayland app-id; keep it identical.
     glib::set_prgname(Some(APP_ID));
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
