@@ -27,6 +27,9 @@ pub struct Manifest {
     /// Release marker we last installed from `update_info` (tag name).
     #[serde(default)]
     pub remote_version: Option<String>,
+    /// Things worth telling the user after install (e.g. libraries the program needs but the system lacks).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 

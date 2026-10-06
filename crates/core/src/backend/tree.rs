@@ -17,6 +17,132 @@ pub struct Spec<'a> {
     pub overlay: bool,
 }
 
+/// Does this shared library mean the program has a graphical interface?
+pub fn is_gui_lib(n: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "libgtk-", "libadwaita", "libQt5Widgets", "libQt5Gui", "libQt5Quick", "libQt6Widgets", "libQt6Gui", "libQt6Quick",
+        "libwayland-client", "libX11.so", "libxcb.so", "libSDL2", "libSDL3", "libglfw", "libwx_", "libfltk", "libraylib", "libgdk-",
+    ];
+    PREFIXES.iter().any(|p| n.starts_with(p))
+}
+
+/// Is `path` an ELF program that links a GUI toolkit?
+pub fn is_gui_exe(path: &Path) -> bool {
+    crate::elf::needed_of_file(path).map(|n| n.iter().any(|l| is_gui_lib(l))).unwrap_or(false)
+}
+
+fn host_libs() -> &'static std::collections::HashSet<String> {
+    static LIBS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    LIBS.get_or_init(|| {
+        let mut set = std::collections::HashSet::new();
+        // `ldconfig -p` knows every library the dynamic linker will find
+        for bin in ["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"] {
+            if let Ok(o) = std::process::Command::new(bin).arg("-p").output() {
+                if o.status.success() {
+                    for l in String::from_utf8_lossy(&o.stdout).lines() {
+                        if l.contains("x86-64") {
+                            if let Some(n) = l.split_whitespace().next() {
+                                set.insert(n.to_string());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        for d in ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/lib/x86_64-linux-gnu"] {
+            if let Ok(rd) = std::fs::read_dir(d) {
+                set.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".so")));
+            }
+        }
+        set
+    })
+}
+
+fn collect_so(dir: &Path, depth: u32, out: &mut std::collections::HashSet<String>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            collect_so(&p, depth - 1, out);
+        } else if let Some(n) = p.file_name().map(|n| n.to_string_lossy().into_owned()) {
+            if n.contains(".so") {
+                out.insert(n);
+            }
+        }
+    }
+}
+
+fn walk_elf_programs(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    if depth == 0 || out.len() >= 40 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            walk_elf_programs(&p, depth - 1, out);
+        } else if ft.is_file() && std::fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
+            if std::fs::File::open(&p).and_then(|mut f| { let mut b = [0u8; 4]; f.read_exact(&mut b).map(|_| b) }).is_ok_and(|b| &b == b"\x7fELF") {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// ELF executables of a package tree: `usr/bin`, `bin`, `usr/games` and the top of `opt/*`.
+/// Plain archives have no fixed layout, so for them the whole tree is searched.
+fn elf_programs(root: &Path, whole_tree: bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if whole_tree {
+        walk_elf_programs(root, 6, &mut out);
+        return out;
+    }
+    let mut dirs: Vec<PathBuf> = ["usr/bin", "usr/games", "bin", "usr/sbin"].iter().map(|d| root.join(d)).collect();
+    if let Ok(rd) = std::fs::read_dir(root.join("opt")) {
+        for e in rd.flatten() {
+            dirs.push(e.path());
+            if let Ok(rd2) = std::fs::read_dir(e.path()) {
+                dirs.extend(rd2.flatten().map(|x| x.path()).filter(|p| p.is_dir()));
+            }
+        }
+    }
+    for d in dirs {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(m) = std::fs::metadata(&p) else { continue }; // follows symlinks
+            if m.is_file() && m.permissions().mode() & 0o111 != 0 && std::fs::File::open(&p).and_then(|mut f| { let mut b = [0u8; 4]; f.read_exact(&mut b).map(|_| b) }).is_ok_and(|b| &b == b"\x7fELF") {
+                out.push(p);
+                if out.len() >= 40 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Libraries the package's programs need that neither the package nor the system provides.
+pub fn scan_missing(root: &Path, whole_tree: bool) -> Vec<String> {
+    let mut have = host_libs().clone();
+    collect_so(root, 8, &mut have);
+    let mut missing = std::collections::BTreeSet::new();
+    for exe in elf_programs(root, whole_tree) {
+        for lib in crate::elf::needed_of_file(&exe).unwrap_or_default() {
+            if !have.contains(&lib) && !lib.starts_with("ld-linux") && !lib.starts_with("linux-vdso") {
+                missing.insert(lib);
+            }
+        }
+    }
+    missing.into_iter().collect()
+}
+
 /// First `cmd` found in PATH.
 pub fn which(cmd: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(cmd)).find(|p| p.is_file())
@@ -187,6 +313,15 @@ pub fn install_tree(
         cleanup(&files);
         return Err(e);
     }
+    let mut notes = Vec::new();
+    if matches!(spec.kind, "deb" | "rpm" | "arch" | "archive") {
+        let missing = scan_missing(&root, spec.kind == "archive");
+        if !missing.is_empty() {
+            let shown: Vec<_> = missing.iter().take(8).cloned().collect();
+            let more = if missing.len() > shown.len() { format!(" та ще {}", missing.len() - shown.len()) } else { String::new() };
+            notes.push(format!("Не вистачає бібліотек: {}{more}. Програма може не запуститися.", shown.join(", ")));
+        }
+    }
     let m = Manifest {
         id: spec.id,
         name: spec.name,
@@ -194,6 +329,7 @@ pub fn install_tree(
         kind: spec.kind.into(),
         source: Some(spec.source.display().to_string()),
         files,
+        notes,
         ..Default::default()
     };
     m.save(&dirs.state)?;

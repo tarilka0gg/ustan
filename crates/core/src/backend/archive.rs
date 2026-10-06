@@ -334,7 +334,7 @@ impl Backend for Archive {
                 if files.len() > 1 {
                     return Ok(()); // the archive shipped its own launchers (usr/share/applications)
                 }
-                if p.gui {
+                if p.gui || super::tree::is_gui_exe(&exe) {
                     let icon = desktop::find_icon_deep(root, &p.name);
                     let mut t = format!(
                         "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\"\nPath={}\nTerminal=false\nCategories=Utility;\n",

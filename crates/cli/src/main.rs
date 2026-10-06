@@ -86,6 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 m.save(&dir)?;
                 let _ = std::fs::remove_file(&file); // installed copy lives in ~/.local/opt
             }
+            for n in &m.notes {
+                eprintln!("увага: {n}");
+            }
             println!("installed {} {}", m.id, m.version.as_deref().unwrap_or(""));
         }
         Cmd::Register { exe, archives } => {

@@ -66,7 +66,8 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, S
         m.save(&dirs.state).map_err(|e| e.to_string())?;
     }
     cleanup(p);
-    Ok(m.name)
+    // notes (e.g. missing libraries) are shown under the name on the result page
+    Ok(m.notes.iter().fold(m.name.clone(), |acc, n| format!("{acc}\n⚠ {n}")))
 }
 
 fn run_remove(p: &Prepared) -> Result<String, String> {

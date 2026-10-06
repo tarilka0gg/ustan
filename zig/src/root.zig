@@ -60,6 +60,11 @@ export fn ustan_rpm_string(data: [*]const u8, len: usize, tag: u32, buf: [*]u8, 
     return rpm.string(data[0..len], tag, buf[0..cap], out_len);
 }
 
+/// DT_NEEDED library names of an ELF64-LE file, newline-separated. 0 on success.
+export fn ustan_elf_needed(data: [*]const u8, len: usize, out: [*]u8, cap: usize, out_len: *usize) i32 {
+    return elf.needed(data[0..len], out[0..cap], out_len);
+}
+
 test {
     _ = rpm;
     _ = lnk;
