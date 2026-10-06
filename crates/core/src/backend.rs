@@ -31,6 +31,8 @@ pub struct Info {
 pub struct Opts {
     /// Treat a Windows .exe as an installer to run under Wine (instead of a portable app).
     pub installer: bool,
+    /// Extra arguments for a Windows installer, e.g. `/S` (NSIS), `/VERYSILENT` (Inno), `/qn` (msi).
+    pub installer_args: Vec<String>,
 }
 
 pub trait Backend {

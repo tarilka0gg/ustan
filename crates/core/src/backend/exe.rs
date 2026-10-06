@@ -2,7 +2,7 @@
 //! A local file is registered in place (games keep their data next to the .exe);
 //! a downloaded one (inside our cache) is copied into the app dir first.
 use super::{slug, Backend, Info, Opts};
-use crate::{dirs::Dirs, manifest::Manifest, pe, Error, Result};
+use crate::{dirs::Dirs, manifest::Manifest, pe, runner, Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -20,6 +20,20 @@ fn read_exe(path: &Path) -> Result<Vec<u8>> {
         return Err(Error::Format("not a Windows executable or installer".into()));
     }
     Ok(data)
+}
+
+/// `npp.8.9.8.1.Installer.x64` -> `npp`: drop version numbers and installer/arch words from a file name.
+fn app_name(stem: &str) -> String {
+    const NOISE: &[&str] = &["installer", "setup", "install", "x64", "x86", "win64", "win32", "amd64", "64bit", "32bit", "windows", "win", "portable", "offline", "online"];
+    let words: Vec<&str> = stem
+        .split(['.', '-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .filter(|w| {
+            let l = w.to_lowercase();
+            !NOISE.contains(&l.as_str()) && !l.trim_start_matches('v').chars().all(|c| c.is_ascii_digit())
+        })
+        .collect();
+    if words.is_empty() { stem.to_string() } else { words.join("-") }
 }
 
 fn stem(path: &Path) -> String {
@@ -44,7 +58,7 @@ impl Backend for Exe {
 
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
         if opts.installer || is_msi(path) {
-            return install_installer(path, dirs);
+            return install_installer(path, dirs, opts);
         }
         let data = read_exe(path)?;
         let name = stem(path);
@@ -76,8 +90,9 @@ impl Backend for Exe {
             };
 
             let wd = exe.parent().unwrap_or(Path::new("/"));
+            let wc = wine_command(dirs);
             let mut t = format!(
-                "[Desktop Entry]\nType=Application\nName={name}\nExec=env \"WINEPREFIX={}\" wine \"{}\"\nPath={}\nCategories=Wine;\nStartupWMClass={}\n",
+                "[Desktop Entry]\nType=Application\nName={name}\nExec=env \"WINEPREFIX={}\" {wc} \"{}\"\nPath={}\nCategories=Wine;\nStartupWMClass={}\n",
                 root.join("prefix").display(),
                 exe.display(),
                 wd.display(),
@@ -148,9 +163,19 @@ fn start_menus(prefix: &Path) -> Vec<PathBuf> {
 }
 
 /// Run a Windows installer in a fresh prefix, then turn the Start Menu shortcuts it made into launchers.
-fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
+/// How launchers call Wine: our wrapper for the chosen runner, or plain `wine` if none is found yet.
+pub fn wine_command(dirs: &Dirs) -> String {
+    match runner::ensure(dirs) {
+        Ok((w, _, _)) => format!("\"{}\"", w.display()),
+        Err(_) => "wine".to_string(),
+    }
+}
+
+fn install_installer(path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
     read_exe(path)?;
-    let name = stem(path);
+    let (wine, wineserver, _) = runner::ensure(dirs)?;
+    let wc = format!("\"{}\"", wine.display());
+    let name = app_name(&stem(path));
     let id = slug(&name);
     let root = dirs.opt.join(&id);
     if root.exists() {
@@ -167,12 +192,13 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
 
     // winemenubuilder off: we make the launchers ourselves, wine must not litter ~/.local/share/applications.
     // An .msi is run through msiexec; an .exe installer is run directly.
-    let mut cmd = Command::new("wine");
+    let mut cmd = Command::new(&wine);
     if is_msi(path) {
         cmd.args(["msiexec", "/i"]);
     }
     let st = cmd
         .arg(std::fs::canonicalize(path)?)
+        .args(&opts.installer_args)
         .env("WINEPREFIX", &prefix)
         .env("WINEDLLOVERRIDES", "winemenubuilder.exe=d")
         .env("WINEDEBUG", "-all")
@@ -181,10 +207,10 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
         Ok(s) => s,
         Err(e) => {
             cleanup(&files);
-            return Err(Error::Format(format!("cannot run wine: {e}")));
+            return Err(Error::Format(format!("не вдалося запустити Wine: {e}")));
         }
     };
-    let _ = Command::new("wineserver").arg("-w").env("WINEPREFIX", &prefix).status();
+    let _ = Command::new(&wineserver).arg("-w").env("WINEPREFIX", &prefix).status();
 
     let res = (|| -> Result<usize> {
         let mut lnks = Vec::new();
@@ -205,7 +231,7 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
             let icon = std::fs::read(&exe).ok().and_then(|d| pe::icon_png(&d).ok().flatten());
             let lid = slug(&label);
             let mut t = format!(
-                "[Desktop Entry]\nType=Application\nName={label}\nExec=env \"WINEPREFIX={}\" wine \"{}\"{}\nPath={}\nCategories=Wine;\nStartupWMClass={low}\n",
+                "[Desktop Entry]\nType=Application\nName={label}\nExec=env \"WINEPREFIX={}\" {wc} \"{}\"{}\nPath={}\nCategories=Wine;\nStartupWMClass={low}\n",
                 prefix.display(),
                 exe.display(),
                 if sc.args.is_empty() { String::new() } else { format!(" {}", sc.args) },
@@ -241,6 +267,14 @@ fn install_installer(path: &Path, dirs: &Dirs) -> Result<Manifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installer_names_lose_versions_and_arch() {
+        assert_eq!(app_name("npp.8.9.8.1.Installer.x64"), "npp");
+        assert_eq!(app_name("7z2301-x64"), "7z2301");
+        assert_eq!(app_name("Setup"), "Setup");
+        assert_eq!(app_name("MyApp_v2.0_win64_setup"), "MyApp");
+    }
 
     #[test]
     fn maps_windows_paths_case_insensitively() {

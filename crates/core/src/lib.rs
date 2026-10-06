@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod pe;
 pub mod update;
 pub mod register;
+pub mod runner;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

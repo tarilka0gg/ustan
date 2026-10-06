@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use ustan_core::{backend, discover, fetch, register, update, dirs::Dirs, manifest::Manifest};
+use ustan_core::{backend, discover, fetch, register, runner, update, dirs::Dirs, manifest::Manifest};
 
 #[derive(Parser)]
 #[command(name = "ustan", about = "Windows-style app installer for Linux")]
@@ -23,6 +23,9 @@ enum Cmd {
         /// Treat a Windows .exe as an installer: run it under Wine and create launchers
         #[arg(long)]
         installer: bool,
+        /// Arguments for the Windows installer, e.g. "/S" (NSIS), "/VERYSILENT" (Inno), "/qn" (msi)
+        #[arg(long, allow_hyphen_values = true)]
+        installer_args: Option<String>,
     },
     /// List installed apps
     List,
@@ -50,8 +53,19 @@ enum Cmd {
         #[arg(long)]
         update: bool,
     },
+    /// Show or choose the Wine used for Windows programs
+    Runner {
+        #[command(subcommand)]
+        cmd: Option<RunnerCmd>,
+    },
     /// Remove an installed app
     Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum RunnerCmd {
+    /// Use this runner (a name from `ustan runner`, or a path to a wine binary)
+    Use { name: String },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let b = backend::pick(&file).ok_or("unsupported package type")?;
             println!("{:#?}", b.inspect(&file)?);
         }
-        Cmd::Install { source, sha256, installer } => {
+        Cmd::Install { source, sha256, installer, installer_args } => {
             let mut etag = None;
             let file = if fetch::is_url(&source) {
                 let (f, e) = fetch::download_with_validator(&source, &dirs.state.join("cache"), sha256.as_deref())?;
@@ -79,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("увага: {w}");
                 }
             }
-            let mut m = b.install(&file, &dirs, &backend::Opts { installer })?;
+            let mut m = b.install(&file, &dirs, &backend::Opts { installer, installer_args: installer_args.as_deref().unwrap_or("").split_whitespace().map(String::from).collect() })?;
             if fetch::is_url(&source) {
                 m.url = Some(source.clone());
                 m.etag = etag;
@@ -144,6 +158,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Cmd::Runner { cmd } => match cmd {
+            None => {
+                let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?);
+                let current = runner::pick(&dirs, &home).map(|r| r.name);
+                let all = runner::discover(&home);
+                if all.is_empty() {
+                    println!("Wine не знайдено: немає `wine` у PATH, PortProton чи Steam Proton");
+                }
+                for r in all {
+                    println!("{} {}", if Some(&r.name) == current.as_ref() { "*" } else { " " }, r.name);
+                }
+            }
+            Some(RunnerCmd::Use { name }) => {
+                let r = runner::set(&dirs, &name)?;
+                println!("тепер Windows-програми запускає: {}", r.name);
+            }
+        },
         Cmd::List => {
             for m in Manifest::list(&dir)? {
                 println!("{}\t{}\t{}", m.id, m.version.as_deref().unwrap_or("-"), m.kind);

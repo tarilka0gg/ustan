@@ -59,7 +59,7 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<String, S
         old.uninstall(&dirs.state).map_err(|e| e.to_string())?;
     }
     let b = backend::pick(&p.path).ok_or("Цей тип файлу не підтримується")?;
-    let mut m = b.install(&p.path, &dirs, &Opts { installer }).map_err(|e| e.to_string())?;
+    let mut m = b.install(&p.path, &dirs, &Opts { installer, ..Default::default() }).map_err(|e| e.to_string())?;
     if let Some((url, etag)) = &p.origin {
         m.url = Some(url.clone());
         m.etag = etag.clone();

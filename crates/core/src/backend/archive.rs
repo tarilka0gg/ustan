@@ -1,7 +1,7 @@
 //! Plain archives (`.tar.gz|xz|zst|bz2`, `.tgz`, `.zip`): unpack, find the main executable and
 //! make it launchable. GUI-looking apps (icons/.desktop inside) get a launcher; the rest are CLI tools
 //! and get a symlink in `~/.local/bin`.
-use super::tree::{decompress, dest, install_tree, safe_rel, which, Spec};
+use super::tree::{decompress, dest, install_tree, safe_rel, Spec};
 use super::{slug, Backend, Info, Opts};
 use crate::{desktop, dirs::Dirs, manifest::Manifest, pe, Error, Result};
 use std::io::{Cursor, Read};
@@ -295,7 +295,7 @@ impl Backend for Archive {
     fn inspect(&self, path: &Path) -> Result<Info> {
         let d = open(path)?;
         let p = plan(path, &d)?;
-        let warning = (p.wine && which("wine").is_none()).then(|| "це програма для Windows, потрібен wine (його немає в PATH)".to_string());
+        let warning = (p.wine && !crate::runner::available(&Dirs::from_env())).then(|| "це програма для Windows, а Wine не знайдено (ні в PATH, ні PortProton, ні Steam Proton)".to_string());
         Ok(Info { id: p.id, name: p.name, version: version_of(&stem(path)), kind: "archive", icon: None, warning })
     }
 
@@ -311,9 +311,10 @@ impl Backend for Archive {
             |root, dirs, id, files| {
                 let exe = root.join(&p.exe);
                 if p.wine {
+                    let wc = super::exe::wine_command(dirs);
                     let icon = std::fs::read(&exe).ok().and_then(|d| pe::icon_png(&d).ok().flatten());
                     let mut t = format!(
-                        "[Desktop Entry]\nType=Application\nName={}\nExec=env \"WINEPREFIX={}\" wine \"{}\"\nPath={}\nCategories=Wine;\nStartupWMClass={}\n",
+                        "[Desktop Entry]\nType=Application\nName={}\nExec=env \"WINEPREFIX={}\" {wc} \"{}\"\nPath={}\nCategories=Wine;\nStartupWMClass={}\n",
                         p.name,
                         root.join("prefix").display(),
                         exe.display(),
