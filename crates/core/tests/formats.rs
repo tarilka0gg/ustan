@@ -282,6 +282,25 @@ fn tar_gz_cli_tool_goes_to_bin() {
 }
 
 #[test]
+fn wine_wrapper_game_gets_a_menu_entry_named_after_the_archive() {
+    let env = Env::new("winepack");
+    let tar = gz(&tar_bytes(&[
+        E::File("MyGame/ENG/start.sh", SCRIPT, 0o755),
+        E::File("MyGame/ENG/game_info/game_info.txt", b"My Game\n1.0\nGAME.EXE\n\n\nMy Game: Deluxe\n", 0o644),
+        E::File("MyGame/ENG/game_info/dlls/d3dx9_30.dll", b"MZ", 0o644),
+    ]));
+    let p = env.file("MyGame_Linux.tar.gz", &tar);
+    let m = env.install(&p);
+    assert_eq!(m.id, "mygame");
+    let d = std::fs::read_to_string(env.dirs.apps.join("ustan-mygame.desktop")).unwrap();
+    assert!(d.contains("Name=My Game: Deluxe") && d.contains("ustan-run.sh"), "{d}");
+    assert!(env.bin().join("mygame").exists());
+    m.uninstall(&env.dirs.state).unwrap();
+    let _ = std::fs::remove_dir_all(env.dirs.state.join("runner")); // shared runner wrappers stay by design
+    env.assert_clean();
+}
+
+#[test]
 fn tar_gz_with_icon_is_a_menu_app() {
     let env = Env::new("targzgui");
     let png = png();

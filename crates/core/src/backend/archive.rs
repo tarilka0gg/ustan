@@ -3,6 +3,7 @@
 //! and get a symlink in `~/.local/bin`.
 use super::tree::{decompress, decompress_reader, dest, install_tree, safe_rel, Spec};
 use super::{slug, Backend, Info, Opts};
+use crate::desktop;
 use crate::{dirs::Dirs, manifest::Manifest, pe, Error, Result};
 use std::io::{Cursor, Read};
 use std::os::unix::fs::PermissionsExt;
@@ -239,6 +240,77 @@ struct Plan {
     wine: bool,
     /// Command name in ~/.local/bin when the program's own file name says nothing (`start.sh`).
     bin: Option<String>,
+    /// A game packed with Kron4ek's Wine wrapper (`start.sh` + `game_info/game_info.txt`).
+    pack: bool,
+}
+
+fn is_wine_pack(entries: &[Entry], exe: &Path) -> bool {
+    let dir = exe.parent().unwrap_or(Path::new(""));
+    exe.extension().is_some_and(|x| x == "sh") && entries.iter().any(|e| e.path == dir.join("game_info/game_info.txt"))
+}
+
+/// Set up a "Wine wrapper" game to run through ustan's runner: system-Wine mode, a wow64 prefix when
+/// the runner has no 32-bit `wine`, DXVK's d3d9 for Direct3D 9 games, and a launcher that puts the
+/// runner's wrapper first in PATH. The package's own files stay as shipped otherwise.
+fn setup_wine_pack(root: &Path, dirs: &Dirs, id: &str, name: &str, exe: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    use std::io::Write;
+    let pkg = exe.parent().unwrap();
+    let script_name = exe.file_stem().unwrap().to_string_lossy().into_owned();
+    let mut settings = String::new();
+    if let Ok((w, _, r)) = crate::runner::ensure(dirs) {
+        settings.push_str("export USE_SYSTEM_WINE=1\n");
+        if let Some(rr) = &r.root {
+            if !rr.join("bin/wine").is_file() {
+                settings.push_str("export WINEARCH=win64\n"); // wow64 build: runs 32-bit games in a 64-bit prefix
+            }
+            let dll = rr.join("lib/wine/dxvk/i386-windows/d3d9.dll");
+            let dlls = pkg.join("game_info/dlls");
+            let wants_d3d9 = std::fs::read_dir(&dlls).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().to_lowercase().starts_with("d3dx9"))).unwrap_or(false);
+            if dll.is_file() && wants_d3d9 && !dlls.join("d3d9.dll").exists() {
+                std::fs::copy(&dll, dlls.join("d3d9.dll"))?;
+            }
+        }
+        let _ = w;
+        let sh = pkg.join("game_info/sh");
+        std::fs::create_dir_all(&sh)?;
+        std::fs::write(
+            sh.join("10-syswow64.sh"),
+            "#!/bin/sh\n# wow64 Wine loads 32-bit DLLs from syswow64\nfor x in game_info/dlls/*.dll; do\n\t[ -d \"$WINEPREFIX/drive_c/windows/syswow64\" ] && ln -sf \"$PWD/$x\" \"$WINEPREFIX/drive_c/windows/syswow64/$(basename \"$x\")\"\ndone\n",
+        )?;
+        std::fs::set_permissions(sh.join("10-syswow64.sh"), std::fs::Permissions::from_mode(0o755))?;
+    }
+    let sf = pkg.join(format!("settings_{script_name}"));
+    if !settings.is_empty() && !sf.exists() {
+        std::fs::write(&sf, settings)?; // start.sh sources it over its own defaults
+    }
+    std::fs::set_permissions(exe, std::fs::Permissions::from_mode(0o755))?;
+
+    // wrapper: runner first in PATH
+    let run = pkg.join("ustan-run.sh");
+    let mut f = std::fs::File::create(&run)?;
+    writeln!(f, "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nexec \"{}\" \"$@\"", dirs.state.join("runner").display(), exe.display())?;
+    drop(f);
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755))?;
+
+    let game = std::fs::read_to_string(pkg.join("game_info/game_info.txt")).ok().and_then(|t| t.lines().nth(5).map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned)).unwrap_or_else(|| name.to_string());
+    let icon = ["icon.png", "icon.ico", "icon"].iter().map(|n| pkg.join("game_info").join(n)).find(|p| p.is_file()).or_else(|| desktop::find_icon_deep(root, name));
+    let mut t = format!("[Desktop Entry]\nType=Application\nName={game}\nExec=\"{}\"\nPath={}\nTerminal=false\nCategories=Game;\n", run.display(), pkg.display());
+    if let Some(i) = icon {
+        t.push_str(&format!("Icon={}\n", i.display()));
+    }
+    std::fs::create_dir_all(&dirs.apps)?;
+    let dst = dirs.apps.join(format!("ustan-{id}.desktop"));
+    std::fs::write(&dst, t)?;
+    files.push(dst);
+
+    let bin = dirs.opt.parent().unwrap_or(&dirs.opt).join("bin");
+    std::fs::create_dir_all(&bin)?;
+    let link = bin.join(id);
+    if std::fs::symlink_metadata(&link).is_err() {
+        std::os::unix::fs::symlink(&run, &link)?;
+        files.push(link);
+    }
+    Ok(())
 }
 
 /// File names that do not name the program. A game or app shipped as `Foo/start.sh` is "Foo".
@@ -278,12 +350,12 @@ fn plan(path: &Path, d: &Data) -> Result<Plan> {
     if let Some(e) = main_exe(&entries, &stem(path)) {
         let (name, generic) = program_name(&e.path, path);
         let id = slug(&name);
-        return Ok(Plan { bin: generic.then(|| id.clone()), id, name: title(&name), exe: e.path.clone(), gui: looks_gui(&entries), wine: false });
+        return Ok(Plan { bin: generic.then(|| id.clone()), id, name: title(&name), exe: e.path.clone(), gui: looks_gui(&entries), wine: false, pack: is_wine_pack(&entries, &e.path) });
     }
     // No Linux program: a portable Windows app in a zip/7z is common, run it through Wine.
     if let Some(e) = main_win_exe(&entries, &stem(path)) {
         let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true, bin: None });
+        return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true, bin: None, pack: false });
     }
     Err(Error::Format("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows".into()))
 }
@@ -406,6 +478,9 @@ impl Backend for Archive {
                     std::fs::write(&dst, t)?;
                     files.push(dst);
                     return Ok(());
+                }
+                if p.pack {
+                    return setup_wine_pack(root, dirs, id, &p.name, &exe, files);
                 }
                 std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
                 if files.len() > 1 {
