@@ -64,10 +64,10 @@ pub fn get_cachyos(dirs: &Dirs) -> Result<Runner> {
         .map_err(|e| Error::Format(format!("GitHub: {e}")))?
         .into_json()
         .map_err(|e| Error::Format(format!("GitHub: {e}")))?;
-    let assets = rel["assets"].as_array().ok_or_else(|| Error::Format("GitHub: у релізі немає файлів".into()))?;
+    let assets = rel["assets"].as_array().ok_or_else(|| Error::Format(t!("GitHub: у релізі немає файлів", "GitHub: the release has no files").into()))?;
     let suffix = if has_avx2() { "-x86_64_v3.tar.xz" } else { "-x86_64.tar.xz" };
     let url_of = |name_end: &str| assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(name_end))).and_then(|a| a["browser_download_url"].as_str());
-    let url = url_of(suffix).ok_or_else(|| Error::Format(format!("у релізі немає *{suffix}")))?;
+    let url = url_of(suffix).ok_or_else(|| Error::Format(t!("у релізі немає *{suffix}", "the release has no *{suffix}")))?;
     let name = url.rsplit('/').next().unwrap_or("proton-cachyos").trim_end_matches(".tar.xz").to_string();
     let dest = runners_dir(&home).join(&name);
     if let Some(r) = tool_root(&dest).and_then(|r| from_root(format!("ustan/{name}"), &r, 3)) {
@@ -84,10 +84,10 @@ pub fn get_cachyos(dirs: &Dirs) -> Result<Runner> {
         let have: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if have != want {
             let _ = std::fs::remove_file(&got.path);
-            return Err(Error::Format("sha512 не збігається: файл пошкоджений".into()));
+            return Err(Error::Format(t!("sha512 не збігається: файл пошкоджений", "sha512 mismatch: the file is damaged").into()));
         }
     }
-    crate::progress::status("Розпаковую Proton…");
+    crate::progress::status(t!("Розпаковую Proton…", "Unpacking Proton…"));
     let tmp = runners_dir(&home).join(format!(".{name}.part"));
     let _ = std::fs::remove_dir_all(&tmp);
     crate::backend::archive::extract_to(&got.path, &tmp)?;
@@ -97,7 +97,7 @@ pub fn get_cachyos(dirs: &Dirs) -> Result<Runner> {
     std::fs::rename(&src, &dest)?;
     let _ = std::fs::remove_dir_all(&tmp);
     let _ = std::fs::remove_file(&got.path);
-    tool_root(&dest).and_then(|r| from_root(format!("ustan/{name}"), &r, 3)).ok_or_else(|| Error::Format("у архіві немає bin/wine".into()))
+    tool_root(&dest).and_then(|r| from_root(format!("ustan/{name}"), &r, 3)).ok_or_else(|| Error::Format(t!("у архіві немає bin/wine", "no bin/wine in the archive").into()))
 }
 
 /// Every Wine we can find, best first.
@@ -202,7 +202,7 @@ pub fn write_wrappers(dirs: &Dirs, r: &Runner) -> Result<(PathBuf, PathBuf)> {
 /// Wrappers for the chosen runner, or an error that says what to install.
 pub fn ensure(dirs: &Dirs) -> Result<(PathBuf, PathBuf, Runner)> {
     let r = pick(dirs, &home()).ok_or_else(|| {
-        Error::Format("не знайшов Wine: ні `wine` у PATH, ні PortProton, ні Steam Proton (див. `ustan runner`)".into())
+        Error::Format(t!("не знайшов Wine: ні `wine` у PATH, ні PortProton, ні Steam Proton (див. `ustan runner`)", "Wine not found: no `wine` in PATH, PortProton or Steam Proton (see `ustan runner`)").into())
     })?;
     let (w, s) = write_wrappers(dirs, &r)?;
     Ok((w, s, r))
@@ -216,7 +216,7 @@ pub fn set(dirs: &Dirs, choice: &str) -> Result<Runner> {
         .find(|r| r.name == choice)
         .cloned()
         .or_else(|| Path::new(choice).parent().and_then(Path::parent).and_then(|root| from_root(choice.to_string(), root, 0)))
-        .ok_or_else(|| Error::Format(format!("невідомий runner `{choice}` (див. `ustan runner`)")))?;
+        .ok_or_else(|| Error::Format(t!("невідомий runner `{choice}` (див. `ustan runner`)", "unknown runner `{choice}` (see `ustan runner`)")))?;
     let mut c = crate::config::load(dirs);
     c.wine = Some(choice.to_string());
     crate::config::save(dirs, &c)?;

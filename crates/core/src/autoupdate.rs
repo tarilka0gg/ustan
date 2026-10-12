@@ -84,13 +84,13 @@ pub fn run_once(dirs: &Dirs, apply: bool, notify_user: bool) -> Result<Summary> 
 
     if notify_user {
         if !fresh.is_empty() {
-            notify("Є оновлення", &format!("{}\nВідкрий ustan, щоб оновити.", fresh.join(", ")));
+            notify(&t!("Є оновлення", "Updates available"), &t!("{}\nВідкрий ustan, щоб оновити.", "{}\nOpen ustan to update.", fresh.join(", ")));
         }
         if !sum.applied.is_empty() {
-            notify("Програми оновлено", &sum.applied.join(", "));
+            notify(&t!("Програми оновлено", "Apps updated"), &sum.applied.join(", "));
         }
         if !sum.failed.is_empty() {
-            notify("Не вдалося оновити", &sum.failed.join("\n"));
+            notify(&t!("Не вдалося оновити", "Update failed"), &sum.failed.join("\n"));
         }
     }
     Ok(sum)
@@ -174,7 +174,7 @@ pub fn enable(dirs: &Dirs, apply: bool, hours: Option<u64>) -> Result<String> {
         std::fs::write(d.join("ustan-update.timer"), timer)?;
         let _ = run_ok("systemctl", &["--user", "daemon-reload"]);
         if run_ok("systemctl", &["--user", "enable", "--now", "ustan-update.timer"]) {
-            return Ok(format!("systemd-таймер ustan-update.timer: кожні {h} год"));
+            return Ok(t!("systemd-таймер ustan-update.timer: кожні {h} год", "systemd timer ustan-update.timer: every {h} h"));
         }
     }
     if crate::backend::tree::which("crontab").is_some() {
@@ -185,12 +185,12 @@ pub fn enable(dirs: &Dirs, apply: bool, hours: Option<u64>) -> Result<String> {
         use std::io::Write;
         child.stdin.take().unwrap().write_all(new.as_bytes())?;
         if child.wait()?.success() {
-            return Ok(format!("cron: кожні {h} год"));
+            return Ok(t!("cron: кожні {h} год", "cron: every {h} h"));
         }
     }
-    Ok(format!(
-        "налаштування збережено, але планувальника (systemd/cron) тут немає. Запускай `ustan watch` при вході, \
-         наприклад у niri: додай рядок\n  {NIRI_LINE}\nабо виконай `ustan autoupdate enable --niri`"
+    Ok(t!("налаштування збережено, але планувальника (systemd/cron) тут немає. Запускай `ustan watch` при вході, \
+         наприклад у niri: додай рядок\n  {NIRI_LINE}\nабо виконай `ustan autoupdate enable --niri`", "settings saved, but there is no scheduler (systemd/cron) here. Run `ustan watch` at login, \
+         for example in niri: add the line\n  {NIRI_LINE}\nor run `ustan autoupdate enable --niri`"
     ))
 }
 
@@ -198,7 +198,7 @@ pub fn disable(dirs: &Dirs) -> Result<String> {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let mut did = Vec::new();
     if run_ok("systemctl", &["--user", "disable", "--now", "ustan-update.timer"]) {
-        did.push("systemd-таймер вимкнено");
+        did.push(t!("systemd-таймер вимкнено", "systemd timer disabled"));
     }
     for f in ["ustan-update.service", "ustan-update.timer"] {
         let _ = std::fs::remove_file(home.join(".config/systemd/user").join(f));
@@ -211,16 +211,16 @@ pub fn disable(dirs: &Dirs) -> Result<String> {
                 use std::io::Write;
                 let _ = ch.stdin.take().unwrap().write_all((kept.join("\n") + "\n").as_bytes());
                 let _ = ch.wait();
-                did.push("запис cron прибрано");
+                did.push(t!("запис cron прибрано", "cron entry removed"));
             }
         }
     }
     let niri = home.join(".config/niri/config.kdl");
     if niri.exists() && niri_set(&niri, false).unwrap_or(false) {
-        did.push("рядок `ustan watch` прибрано з конфігу niri");
+        did.push(t!("рядок `ustan watch` прибрано з конфігу niri", "`ustan watch` line removed from the niri config"));
     }
     let _ = dirs;
-    Ok(if did.is_empty() { "нічого вимикати".into() } else { did.join("; ") })
+    Ok(if did.is_empty() { t!("нічого вимикати", "nothing to disable").into() } else { did.join("; ") })
 }
 
 #[cfg(test)]

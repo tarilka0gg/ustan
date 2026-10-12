@@ -1,3 +1,5 @@
+#[macro_use]
+pub mod i18n;
 pub mod ar;
 mod xzpar;
 pub mod autoupdate;
@@ -24,7 +26,7 @@ pub enum Error {
     Manifest(String),
     #[error("{0}")]
     Format(String),
-    #[error("скасовано")]
+    #[error("{}", crate::i18n::cancelled())]
     Cancelled,
 }
 

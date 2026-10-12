@@ -183,7 +183,7 @@ pub fn make_launcher(root: &Path, dirs: &Dirs, id: &str, name: &str, exe: &Path,
         // a plain archive keeps its program's own name; a bare download is named by the cleaned name
         let link = bin.join(bin_name.map(std::ffi::OsString::from).unwrap_or_else(|| exe.file_name().unwrap().to_owned()));
         if std::fs::symlink_metadata(&link).is_ok() {
-            return Err(Error::Format(format!("{} уже існує в {}", link.file_name().unwrap().to_string_lossy(), bin.display())));
+            return Err(Error::Format(t!("{} уже існує в {}", "{} already exists in {}", link.file_name().unwrap().to_string_lossy(), bin.display())));
         }
         std::os::unix::fs::symlink(exe, &link)?;
         files.push(link);
@@ -384,8 +384,8 @@ pub fn install_tree(
         let missing = scan_missing(&root, matches!(spec.kind, "archive" | "elf" | "makeself"));
         if !missing.is_empty() {
             let shown: Vec<_> = missing.iter().take(8).cloned().collect();
-            let more = if missing.len() > shown.len() { format!(" та ще {}", missing.len() - shown.len()) } else { String::new() };
-            notes.push(format!("Не вистачає бібліотек: {}{more}. Програма може не запуститися.", shown.join(", ")));
+            let more = if missing.len() > shown.len() { t!(" та ще {}", " and {} more", missing.len() - shown.len()) } else { String::new() };
+            notes.push(t!("Не вистачає бібліотек: {}{more}. Програма може не запуститися.", "Missing libraries: {}{more}. The program may not start.", shown.join(", ")));
         }
     }
     let m = Manifest {

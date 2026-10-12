@@ -49,16 +49,16 @@ fn split_version(stem: &str) -> (String, Option<String>) {
 }
 
 fn read_meta(path: &Path, bytes: &[u8]) -> Result<Meta> {
-    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Format(format!("не JAR/zip: {e}")))?;
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Format(t!("не JAR/zip: {e}", "not a JAR/zip: {e}")))?;
     let mf = {
-        let mut f = z.by_name("META-INF/MANIFEST.MF").map_err(|_| Error::Format("немає META-INF/MANIFEST.MF".into()))?;
+        let mut f = z.by_name("META-INF/MANIFEST.MF").map_err(|_| Error::Format(t!("немає META-INF/MANIFEST.MF", "no META-INF/MANIFEST.MF").into()))?;
         let mut s = String::new();
         f.read_to_string(&mut s)?;
         s
     };
     let a = manifest_attrs(&mf);
     if attr(&a, "Main-Class").is_none() {
-        return Err(Error::Format("у JAR немає Main-Class: це бібліотека, а не програма".into()));
+        return Err(Error::Format(t!("у JAR немає Main-Class: це бібліотека, а не програма", "the JAR has no Main-Class: it is a library, not a program").into()));
     }
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "app".into());
     let name = ["Application-Name", "Implementation-Title", "Bundle-Name", "Specification-Title"]
@@ -102,7 +102,7 @@ impl Backend for Jar {
 
     fn inspect(&self, path: &Path) -> Result<Info> {
         let m = read_meta(path, &std::fs::read(path)?)?;
-        let warning = which("java").is_none().then(|| "потрібна Java (команда `java` не знайдена в PATH)".to_string());
+        let warning = which("java").is_none().then(|| t!("потрібна Java (команда `java` не знайдена в PATH)", "Java is required (`java` not found in PATH)").to_string());
         Ok(Info { id: slug(&m.name), name: m.name, version: m.version, kind: "jar", icon: m.icon, warning })
     }
 
@@ -142,7 +142,7 @@ impl Backend for Jar {
                     std::fs::create_dir_all(&bin)?;
                     let script = bin.join(id);
                     if std::fs::symlink_metadata(&script).is_ok() {
-                        return Err(Error::Format(format!("{} уже існує в {}", id, bin.display())));
+                        return Err(Error::Format(t!("{} уже існує в {}", "{} already exists in {}", id, bin.display())));
                     }
                     std::fs::write(&script, format!("#!/bin/sh\nexec java -jar \"{}\" \"$@\"\n", jar.display()))?;
                     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;

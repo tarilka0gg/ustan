@@ -98,7 +98,7 @@ pub fn check(m: &Manifest) -> Result<Status> {
         });
     }
     if m.kind == "flatpak" {
-        return Ok(if flatpak_has_update(&m.name)? { Status::Available("нова версія".into()) } else { Status::UpToDate });
+        return Ok(if flatpak_has_update(&m.name)? { Status::Available(t!("нова версія", "new version").into()) } else { Status::UpToDate });
     }
     if let Some(info) = &m.update_info {
         let (rel, latest) = gh_release(info)?;
@@ -108,24 +108,24 @@ pub fn check(m: &Manifest) -> Result<Status> {
             (None, true) => match &m.version {
                 Some(v) if norm(v) == norm(&rel.marker) => Status::UpToDate,
                 Some(_) => Status::Available(label(&rel.marker, true)),
-                None => Status::Unknown("невідома встановлена версія".into()),
+                None => Status::Unknown(t!("невідома встановлена версія", "installed version unknown").into()),
             },
-            (None, false) => Status::Unknown("немає бази для порівняння".into()),
+            (None, false) => Status::Unknown(t!("немає бази для порівняння", "nothing to compare with").into()),
         });
     }
     if let Some(url) = &m.url {
         let now = fetch::head_validator(url)?;
         return Ok(match (&m.etag, now) {
             (Some(old), Some(new)) if *old == new => Status::UpToDate,
-            (Some(_), Some(_)) => Status::Available("файл змінився".into()),
-            _ => Status::Unknown("сервер не повідомляє версію".into()),
+            (Some(_), Some(_)) => Status::Available(t!("файл змінився", "file changed").into()),
+            _ => Status::Unknown(t!("сервер не повідомляє версію", "the server does not report a version").into()),
         });
     }
-    Ok(Status::Unknown("джерело оновлень невідоме".into()))
+    Ok(Status::Unknown(t!("джерело оновлень невідоме", "update source unknown").into()))
 }
 
 fn label(marker: &str, is_tag: bool) -> String {
-    if is_tag { norm(marker).to_string() } else { "нова збірка".into() }
+    if is_tag { norm(marker).to_string() } else { t!("нова збірка", "new build").into() }
 }
 
 /// Replace the installed copy with a freshly downloaded file. The new file is inspected *before*
@@ -181,7 +181,7 @@ pub fn apply(m: &Manifest, dirs: &Dirs) -> Result<Manifest> {
         new.save(&dirs.state)?;
         return Ok(new);
     }
-    Err(Error::Format("для цієї програми невідоме джерело оновлень".into()))
+    Err(Error::Format(t!("для цієї програми невідоме джерело оновлень", "the update source of this program is unknown").into()))
 }
 
 /// Update check for an unmanaged AppImage found on disk.
@@ -194,12 +194,12 @@ pub fn check_found(f: &crate::discover::Found) -> Result<Status> {
 /// Returns the new version if the file declares one.
 pub fn apply_found(f: &crate::discover::Found, dirs: &Dirs) -> Result<Option<String>> {
     use std::os::unix::fs::PermissionsExt;
-    let info = f.update_info.as_deref().ok_or_else(|| Error::Format("у цього AppImage немає інформації про оновлення".into()))?;
+    let info = f.update_info.as_deref().ok_or_else(|| Error::Format(t!("у цього AppImage немає інформації про оновлення", "this AppImage has no update information").into()))?;
     let (rel, _) = gh_release(info)?;
     let file = fetch::download_checked(&rel.url, &dirs.state.join("cache"), &rel.sha256.clone().map(fetch::Expect::Sha256).unwrap_or_default(), &f.name)?.path;
     let res = (|| -> Result<Option<String>> {
         if !backend::appimage::is_appimage(&file) {
-            return Err(Error::Format("завантажений файл не є AppImage".into()));
+            return Err(Error::Format(t!("завантажений файл не є AppImage", "the downloaded file is not an AppImage").into()));
         }
         let probe = backend::appimage::probe(&file)?;
         let mode = std::fs::metadata(&f.path)?.permissions().mode() | 0o111;

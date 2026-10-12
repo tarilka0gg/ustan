@@ -1,6 +1,7 @@
 use adw::prelude::*;
 use adw::{gdk, gio, glib, gtk};
 use std::path::PathBuf;
+use ustan_core::t;
 use ustan_core::backend::{self, Info, Opts};
 use ustan_core::progress::{self, Event};
 use ustan_core::{dirs::Dirs, discover::{self, Found}, fetch, manifest::Manifest, update};
@@ -19,7 +20,7 @@ fn register_on_first_start() {
     if ustan_core::register::register(&home, &exe, true, true).is_ok() {
         cfg.registered = true;
         let _ = ustan_core::config::save(&dirs, &cfg);
-        ustan_core::autoupdate::notify("ustan тепер відкриває ці формати", "Пакети, AppImage, .exe/.msi, .jar та архіви. Повернути як було: ustan unregister");
+        ustan_core::autoupdate::notify(&t!("ustan тепер відкриває ці формати", "ustan now opens these formats"), &t!("Пакети, AppImage, .exe/.msi, .jar та архіви. Повернути як було: ustan unregister", "Packages, AppImage, .exe/.msi, .jar and archives. To undo: ustan unregister"));
     }
 }
 
@@ -55,13 +56,13 @@ struct Prepared {
 fn prepare(src: &str) -> Result<Prepared, String> {
     let dirs = Dirs::from_env();
     let (path, downloaded, origin, verified) = if fetch::is_url(src) {
-        let label = src.rsplit('/').next().unwrap_or("файл").to_string();
+        let label = src.rsplit('/').next().unwrap_or(&t!("файл", "file")).to_string();
         let got = fetch::download_auto(src, &dirs.state.join("cache"), &label).map_err(|e| e.to_string())?;
         (got.path, true, Some((src.to_string(), got.validator)), got.verified)
     } else {
         (PathBuf::from(src), false, None, None)
     };
-    let b = backend::pick(&path).ok_or("Цей тип файлу не підтримується")?;
+    let b = backend::pick(&path).ok_or(t!("Цей тип файлу не підтримується", "This file type is not supported"))?;
     let info = b.inspect(&path).map_err(|e| e.to_string())?;
     let existing = Manifest::load(&dirs.state, &info.id).ok();
     Ok(Prepared { path, info, downloaded, existing, origin, verified })
@@ -79,7 +80,7 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<(String, 
     if let (true, Some(old)) = (replace, &p.existing) {
         old.uninstall(&dirs.state).map_err(|e| e.to_string())?;
     }
-    let b = backend::pick(&p.path).ok_or("Цей тип файлу не підтримується")?;
+    let b = backend::pick(&p.path).ok_or(t!("Цей тип файлу не підтримується", "This file type is not supported"))?;
     let mut m = b.install(&p.path, &dirs, &Opts { installer, ..Default::default() }).map_err(|e| e.to_string())?;
     if let Some((url, etag)) = &p.origin {
         m.url = Some(url.clone());
@@ -91,15 +92,15 @@ fn run_install(p: &Prepared, installer: bool, replace: bool) -> Result<(String, 
     let mut text = m.notes.iter().fold(m.name.clone(), |acc, n| format!("{acc}\n⚠ {n}"));
     if p.origin.is_some() {
         match p.verified {
-            Some(how) => text.push_str(&format!("\n✓ {how} перевірено")),
-            None => text.push_str("\n⚠ Контрольної суми немає: завантаження не перевірено"),
+            Some(how) => text.push_str(&t!("\n✓ {how} перевірено", "\n✓ {how} verified")),
+            None => text.push_str(&t!("\n⚠ Контрольної суми немає: завантаження не перевірено", "\n⚠ No checksum: the download is not verified")),
         }
     }
     Ok((text, launcher_of(&m)))
 }
 
 fn run_remove(p: &Prepared) -> Result<(String, Option<PathBuf>), String> {
-    let m = p.existing.as_ref().ok_or("Програма не встановлена")?;
+    let m = p.existing.as_ref().ok_or(t!("Програма не встановлена", "The program is not installed"))?;
     m.uninstall(&Dirs::from_env().state).map_err(|e| e.to_string())?;
     cleanup(p);
     Ok((m.name.clone(), None))
@@ -154,11 +155,11 @@ fn follow_progress(p: &Prog) {
                     match total {
                         Some(t) if t > 0 => {
                             bar.set_fraction(done as f64 / t as f64);
-                            label.set_text(&format!("Завантажую {name}: {:.1} з {:.1} МБ", mb(done), mb(t)));
+                            label.set_text(&t!("Завантажую {name}: {:.1} з {:.1} МБ", "Downloading {name}: {:.1} of {:.1} MB", mb(done), mb(t)));
                         }
                         _ => {
                             bar.pulse();
-                            label.set_text(&format!("Завантажую {name}: {:.1} МБ", mb(done)));
+                            label.set_text(&t!("Завантажую {name}: {:.1} МБ", "Downloading {name}: {:.1} MB", mb(done)));
                         }
                     }
                 }
@@ -232,12 +233,12 @@ impl Bar {
     fn new() -> Self {
         let btn = |label: &str, class: &str| gtk::Button::builder().label(label).css_classes([class]).margin_top(6).margin_bottom(6).build();
         let root = gtk::ActionBar::new();
-        let cancel = btn("Скасувати", "flat");
-        let remove = btn("Видалити", "destructive-action");
-        let main = btn("Встановити", "suggested-action");
-        let close = btn("Готово", "suggested-action");
-        let open = btn("Відкрити", "suggested-action");
-        let extract = btn("Розпакувати поруч", "suggested-action");
+        let cancel = btn(&t!("Скасувати", "Cancel"), "flat");
+        let remove = btn(&t!("Видалити", "Remove"), "destructive-action");
+        let main = btn(&t!("Встановити", "Install"), "suggested-action");
+        let close = btn(&t!("Готово", "Done"), "suggested-action");
+        let open = btn(&t!("Відкрити", "Open"), "suggested-action");
+        let extract = btn(&t!("Розпакувати поруч", "Extract here"), "suggested-action");
         root.pack_start(&cancel);
         root.pack_start(&remove);
         root.pack_end(&main);
@@ -250,7 +251,7 @@ impl Bar {
 
     fn show_ready(&self, has_existing: bool) {
         self.busy.set(false);
-        self.cancel.set_label("Скасувати");
+        self.cancel.set_label(&t!("Скасувати", "Cancel"));
         self.cancel.set_sensitive(true);
         self.revealer.set_reveal_child(true);
         self.cancel.set_visible(true);
@@ -261,7 +262,7 @@ impl Bar {
 
     fn show_busy(&self, cancelable: bool) {
         self.busy.set(true);
-        self.cancel.set_label("Скасувати");
+        self.cancel.set_label(&t!("Скасувати", "Cancel"));
         self.cancel.set_sensitive(true);
         self.cancel.set_visible(cancelable);
         for b in [&self.remove, &self.main, &self.close, &self.open, &self.extract] {
@@ -276,7 +277,8 @@ impl Bar {
         for b in [&self.cancel, &self.remove, &self.main] {
             b.set_visible(false);
         }
-        self.close.set_label(if can_open { "Закрити" } else { label });
+        let close_label = if can_open { t!("Закрити", "Close") } else { label.to_string() };
+        self.close.set_label(&close_label);
         self.close.set_css_classes(&[if ok && !can_open { "suggested-action" } else { "flat" }]);
         self.close.set_visible(true);
         self.open.set_visible(can_open);
@@ -287,7 +289,7 @@ impl Bar {
 type Opener = std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>>;
 
 fn install_window(app: &adw::Application, src: String) {
-    let win = adw::ApplicationWindow::builder().application(app).default_width(900).default_height(720).title("Встановлення").build();
+    let win = adw::ApplicationWindow::builder().application(app).default_width(900).default_height(720).title(t!("Встановлення", "Installing")).build();
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
     let bar = std::rc::Rc::new(Bar::new());
@@ -295,7 +297,7 @@ fn install_window(app: &adw::Application, src: String) {
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeft).transition_duration(280).build();
     view.set_content(Some(&stack));
     win.set_content(Some(&view));
-    let loading = progress_page("Читаю пакет…", &src);
+    let loading = progress_page(&t!("Читаю пакет…", "Reading package…"), &src);
     stack.add_named(&loading.page, Some("loading"));
     win.present();
 
@@ -306,7 +308,7 @@ fn install_window(app: &adw::Application, src: String) {
             if bar.busy.get() {
                 progress::cancel();
                 bar.cancel.set_sensitive(false);
-                bar.cancel.set_label("Скасовую…");
+                bar.cancel.set_label(&t!("Скасовую…", "Cancelling…"));
             } else {
                 w.close()
             }
@@ -334,9 +336,9 @@ fn install_window(app: &adw::Application, src: String) {
         match prepared {
             Err(e) => {
                 // an archive with nothing to install is usually just an archive: offer its old handler
-                let nothing_to_install = e.contains("не знайшов в архіві") || e.contains("не підтримується");
-                let title = if nothing_to_install { "Тут немає чого встановлювати" } else { "Не вдалося відкрити файл" };
-                let p = page(title, &e);
+                let nothing_to_install = ["не знайшов в архіві", "found neither", "не підтримується", "not supported"].iter().any(|m| e.contains(m));
+                let title = if nothing_to_install { t!("Тут немає чого встановлювати", "Nothing to install here") } else { t!("Не вдалося відкрити файл", "Could not open the file") };
+                let p = page(&title, &e);
                 p.set_icon_name(Some(if nothing_to_install { "dialog-information-symbolic" } else { "dialog-error-symbolic" }));
                 stack.add_named(&p, Some("end"));
                 stack.set_visible_child_name("end");
@@ -346,9 +348,9 @@ fn install_window(app: &adw::Application, src: String) {
                     *opener.borrow_mut() = Some(std::rc::Rc::new(move || {
                         launch_with(&desktop, Some(&file));
                     }));
-                    bar.open.set_label(&format!("Відкрити в «{name}»"));
+                    bar.open.set_label(&t!("Відкрити в «{name}»", "Open in “{name}”"));
                 }
-                bar.show_end("Закрити", false, elsewhere.is_some());
+                bar.show_end(&t!("Закрити", "Close"), false, elsewhere.is_some());
                 // an archive that is only an archive: ustan can unpack it itself
                 if nothing_to_install && is_unpackable(&src) {
                     bar.extract.set_visible(true);
@@ -363,18 +365,18 @@ fn install_window(app: &adw::Application, src: String) {
                             let r = spawn(move || ustan_core::backend::archive::extract_to(std::path::Path::new(&s2), &d2).map_err(|e| e.to_string())).await;
                             let end = match r {
                                 Ok(()) => {
-                                    let p = page("Розпаковано", &dest.display().to_string());
+                                    let p = page(&t!("Розпаковано", "Extracted"), &dest.display().to_string());
                                     p.set_paintable(ok_icon().as_ref());
                                     let d = dest.clone();
                                     *opener.borrow_mut() = Some(std::rc::Rc::new(move || {
                                         open_folder(&d);
                                     }));
-                                    bar.open.set_label("Відкрити папку");
+                                    bar.open.set_label(&t!("Відкрити папку", "Open folder"));
                                     p
                                 }
                                 Err(e) => {
                                     *opener.borrow_mut() = None;
-                                    let p = page("Не вдалося розпакувати", &e);
+                                    let p = page(&t!("Не вдалося розпакувати", "Could not extract"), &e);
                                     p.set_icon_name(Some("dialog-error-symbolic"));
                                     p
                                 }
@@ -385,7 +387,7 @@ fn install_window(app: &adw::Application, src: String) {
                             }
                             stack.add_named(&end, Some("unpacked"));
                             stack.set_visible_child_name("unpacked");
-                            bar.show_end("Закрити", false, opened);
+                            bar.show_end(&t!("Закрити", "Close"), false, opened);
                         });
                     });
                     if std::env::var_os("USTAN_GUI_AUTOSTART").is_some() {
@@ -400,7 +402,7 @@ fn install_window(app: &adw::Application, src: String) {
                     Some(old) => {
                         let new_v = prep.info.version.as_deref().unwrap_or("—");
                         let old_v = old.version.as_deref().unwrap_or("—");
-                        page(&prep.info.name, &format!("Уже встановлено · {old_v}\nУ файлі · {new_v}"))
+                        page(&prep.info.name, &t!("Уже встановлено · {old_v}\nУ файлі · {new_v}", "Already installed · {old_v}\nIn the file · {new_v}"))
                     }
                     None => page(&prep.info.name, &describe(&prep.info)),
                 };
@@ -409,7 +411,7 @@ fn install_window(app: &adw::Application, src: String) {
                 }
                 show_icon(&ready, &prep.info);
 
-                let installer = adw::SwitchRow::builder().title("Це програма-установник").subtitle("Запустити через Wine і створити ярлики").build();
+                let installer = adw::SwitchRow::builder().title(t!("Це програма-установник", "This is an installer")).subtitle(t!("Запустити через Wine і створити ярлики", "Run through Wine and create shortcuts")).build();
                 if prep.info.kind == "exe" {
                     let n = prep.info.name.to_lowercase();
                     installer.set_active(n.contains("setup") || n.contains("install"));
@@ -420,14 +422,14 @@ fn install_window(app: &adw::Application, src: String) {
                 }
                 stack.add_named(&ready, Some("ready"));
                 stack.set_visible_child_name("ready");
-                bar.main.set_label(if existing { "Перевстановити" } else { "Встановити" });
+                bar.main.set_label(&if existing { t!("Перевстановити", "Reinstall") } else { t!("Встановити", "Install") });
                 bar.show_ready(existing);
 
                 // Run `job` off-thread, then show a result page.
                 let run = std::rc::Rc::new({
                     let (stack, prep, bar, opener) = (stack.clone(), prep.clone(), bar.clone(), opener.clone());
-                    move |job: Box<dyn FnOnce(&Prepared) -> Result<(String, Option<PathBuf>), String> + Send>, ok_title: &'static str, err_title: &'static str, cancelable: bool| {
-                        let prog = progress_page("Зачекай…", &prep.info.name);
+                    move |job: Box<dyn FnOnce(&Prepared) -> Result<(String, Option<PathBuf>), String> + Send>, ok_title: String, err_title: String, cancelable: bool| {
+                        let prog = progress_page(&t!("Зачекай…", "Please wait…"), &prep.info.name);
                         if let Some(old) = stack.child_by_name("busy") {
                             stack.remove(&old);
                         }
@@ -447,13 +449,13 @@ fn install_window(app: &adw::Application, src: String) {
                             let ok = r.is_ok();
                             let launcher = r.as_ref().ok().and_then(|(_, l)| l.clone());
                             let end = match r {
-                                Err(e) if e == "скасовано" => {
-                                    let p = page("Скасовано", "Нічого не змінено");
+                                Err(e) if e == ustan_core::i18n::cancelled() => {
+                                    let p = page(&t!("Скасовано", "Cancelled"), &t!("Нічого не змінено", "Nothing changed"));
                                     p.set_icon_name(Some("dialog-information-symbolic"));
                                     p
                                 }
                                 Ok((name, _)) => {
-                                    let p = page(ok_title, &name);
+                                    let p = page(&ok_title, &name);
                                     match ok_icon() {
                                         Some(t) => p.set_paintable(Some(&t)),
                                         None => p.set_icon_name(Some("object-select-symbolic")),
@@ -461,7 +463,7 @@ fn install_window(app: &adw::Application, src: String) {
                                     p
                                 }
                                 Err(e) => {
-                                    let p = page(err_title, &e);
+                                    let p = page(&err_title, &e);
                                     p.set_icon_name(Some("dialog-error-symbolic"));
                                     p
                                 }
@@ -471,7 +473,7 @@ fn install_window(app: &adw::Application, src: String) {
                             *opener.borrow_mut() = launcher.clone().map(|d| std::rc::Rc::new(move || {
                                 launch(&d);
                             }) as std::rc::Rc<dyn Fn()>);
-                            bar.show_end(if ok { "Готово" } else { "Закрити" }, ok, launcher.is_some());
+                            bar.show_end(&if ok { t!("Готово", "Done") } else { t!("Закрити", "Close") }, ok, launcher.is_some());
                         });
                     }
                 });
@@ -480,10 +482,10 @@ fn install_window(app: &adw::Application, src: String) {
                     let installer = installer.clone();
                     bar.main.connect_clicked(move |_| {
                         let inst = installer.is_active();
-                        run(Box::new(move |p| run_install(p, inst, existing)), if existing { "Перевстановлено" } else { "Встановлено" }, "Не вдалося встановити", !existing);
+                        run(Box::new(move |p| run_install(p, inst, existing)), if existing { t!("Перевстановлено", "Reinstalled") } else { t!("Встановлено", "Installed") }, t!("Не вдалося встановити", "Could not install"), !existing);
                     });
                 }
-                bar.remove.connect_clicked(move |_| run(Box::new(run_remove), "Видалено", "Не вдалося видалити", false));
+                bar.remove.connect_clicked(move |_| run(Box::new(run_remove), t!("Видалено", "Removed"), t!("Не вдалося видалити", "Could not remove"), false));
 
                 // Test hooks (used by automated checks; harmless when the variables are unset):
                 // press "Install" by itself, and optionally press "Cancel" after N milliseconds.
@@ -512,9 +514,9 @@ fn manager_window(app: &adw::Application) {
     let win = adw::ApplicationWindow::builder().application(app).default_width(900).default_height(720).title("Ustan").build();
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
-    let open = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text("Встановити з файлу…").build();
+    let open = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text(t!("Встановити з файлу…", "Install from file…")).build();
     header.pack_start(&open);
-    let recheck = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text("Перевірити оновлення").build();
+    let recheck = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text(t!("Перевірити оновлення", "Check for updates")).build();
     header.pack_end(&recheck);
     view.add_top_bar(&header);
     let bin = adw::Bin::new();
@@ -539,7 +541,7 @@ fn manager_window(app: &adw::Application) {
             UPDATES.with(|u| u.borrow_mut().clear());
             FOUND_UPD.with(|u| u.borrow_mut().clear());
             FOUND.with(|c| *c.borrow_mut() = None);
-            toasts.add_toast(adw::Toast::new("Перевіряю оновлення…"));
+            toasts.add_toast(adw::Toast::new(&t!("Перевіряю оновлення…", "Checking for updates…")));
             refresh(&bin, &toasts, false, true);
         }
     });
@@ -569,20 +571,20 @@ thread_local! {
 }
 
 fn add_update_button(actions: &gtk::Box, row: &adw::ActionRow, m: &Manifest, label: &str, bin: &adw::Bin, toasts: &adw::ToastOverlay) {
-    row.set_subtitle(&format!("{} · {} · є оновлення: {label}", m.kind, m.version.as_deref().unwrap_or("—")));
-    let upd = gtk::Button::builder().label("Оновити").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+    row.set_subtitle(&t!("{} · {} · є оновлення: {label}", "{} · {} · update available: {label}", m.kind, m.version.as_deref().unwrap_or("—")));
+    let upd = gtk::Button::builder().label(t!("Оновити", "Update")).valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
     actions.prepend(&upd);
     let (m, bin, toasts) = (m.clone(), bin.clone(), toasts.clone());
     upd.connect_clicked(move |b| {
         b.set_sensitive(false);
-        b.set_label("Оновлюю…");
+        b.set_label(&t!("Оновлюю…", "Updating…"));
         let (m, bin, toasts) = (m.clone(), bin.clone(), toasts.clone());
         glib::spawn_future_local(async move {
             let m2 = m.clone();
             let r = spawn(move || update::apply(&m2, &Dirs::from_env()).map_err(|e| e.to_string())).await;
             toasts.add_toast(adw::Toast::new(&match &r {
-                Ok(_) => format!("{} оновлено", m.name),
-                Err(e) => format!("Не вдалося оновити: {e}"),
+                Ok(_) => t!("{} оновлено", "{} updated", m.name),
+                Err(e) => t!("Не вдалося оновити: {e}", "Could not update: {e}"),
             }));
             if r.is_ok() {
                 UPDATES.with(|u| u.borrow_mut().remove(&m.id));
@@ -597,14 +599,14 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
     let state = Dirs::from_env().state;
     let (runtimes, apps): (Vec<Manifest>, Vec<Manifest>) = Manifest::list(&state).unwrap_or_default().into_iter().partition(|m| m.runtime);
     UPDATES.with(|u| u.borrow_mut().retain(|id, _| apps.iter().any(|m| &m.id == id)));
-    let group = adw::PreferencesGroup::builder().title("Встановлені програми").margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
+    let group = adw::PreferencesGroup::builder().title(t!("Встановлені програми", "Installed apps")).margin_top(18).margin_bottom(18).margin_start(18).margin_end(18).build();
     if apps.is_empty() {
-        group.set_description(Some("Поки нічого. Відкрий .deb, .AppImage, .exe чи .flatpakref подвійним кліком або кнопкою зверху."));
+        group.set_description(Some(&t!("Поки нічого. Відкрий .deb, .AppImage, .exe чи .flatpakref подвійним кліком або кнопкою зверху.", "Nothing yet. Open a .deb, .AppImage, .exe or .flatpakref by double-clicking it, or use the button above.")));
     }
     for (i, m) in apps.into_iter().enumerate() {
         let row = adw::ActionRow::builder().title(&m.name).subtitle(format!("{} · {}", m.kind, m.version.as_deref().unwrap_or("—"))).build();
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
+        let del = gtk::Button::builder().label(t!("Видалити", "Remove")).valign(gtk::Align::Center).css_classes(["destructive-action"]).build();
         if let Some(d) = launcher_of(&m) {
             let img = match icon_file(&d) {
                 Some(p) => gtk::Image::from_file(p),
@@ -612,7 +614,7 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
             };
             img.set_pixel_size(36);
             row.add_prefix(&img);
-            let run = gtk::Button::builder().label("Запустити").valign(gtk::Align::Center).build();
+            let run = gtk::Button::builder().label(t!("Запустити", "Launch")).valign(gtk::Align::Center).build();
             let toasts = toasts.clone();
             run.connect_clicked(move |_| launch_watched(&d, &toasts));
             actions.append(&run);
@@ -645,8 +647,8 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
                 })
                 .await;
                 toasts.add_toast(adw::Toast::new(&match r {
-                    Ok(()) => format!("{id} видалено"),
-                    Err(e) => format!("Помилка: {e}"),
+                    Ok(()) => t!("{id} видалено", "{id} removed"),
+                    Err(e) => t!("Помилка: {e}", "Error: {e}"),
                 }));
                 fade(&row, 1.0, 0.0, 220, 0, move || refresh(&bin, &toasts, false, false));
             });
@@ -657,8 +659,8 @@ fn refresh(bin: &adw::Bin, toasts: &adw::ToastOverlay, animate: bool, check: boo
         group.add(&row);
     }
     let found = adw::PreferencesGroup::builder()
-        .title("Знайдено на диску")
-        .description("AppImage, які лежать поза ustan. Оновлюються на місці.")
+        .title(t!("Знайдено на диску", "Found on disk"))
+        .description(t!("AppImage, які лежать поза ustan. Оновлюються на місці.", "AppImages that live outside ustan. Updated in place."))
         .margin_bottom(18)
         .margin_start(18)
         .margin_end(18)
@@ -752,7 +754,7 @@ fn run_watched(spec: &ustan_core::desktop::LaunchSpec, log: &std::path::Path) ->
     use std::os::unix::process::CommandExt;
     let name = std::path::Path::new(&spec.argv[0]).file_name().map_or_else(|| spec.argv[0].clone(), |n| n.to_string_lossy().into_owned());
     let _ = std::fs::create_dir_all(log.parent().unwrap_or(log));
-    let out = std::fs::File::create(log).map_err(|e| format!("журнал запуску: {e}"))?;
+    let out = std::fs::File::create(log).map_err(|e| t!("журнал запуску: {e}", "launch log: {e}"))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(&spec.argv[0]);
     cmd.args(&spec.argv[1..]).stdin(std::process::Stdio::null()).stdout(out).stderr(err).process_group(0);
@@ -760,7 +762,7 @@ fn run_watched(spec: &ustan_core::desktop::LaunchSpec, log: &std::path::Path) ->
         cmd.current_dir(d);
     }
     let started = std::time::Instant::now();
-    let mut child = cmd.spawn().map_err(|e| format!("«{name}» не запустилась: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| t!("«{name}» не запустилась: {e}", "“{name}” failed to start: {e}"))?;
     let status = child.wait().map_err(|e| e.to_string())?;
     if status.success() || started.elapsed() > std::time::Duration::from_secs(20) {
         return Ok(());
@@ -769,8 +771,8 @@ fn run_watched(spec: &ustan_core::desktop::LaunchSpec, log: &std::path::Path) ->
     let tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).rev().take(3).collect();
     let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" ");
     let tail: String = tail.chars().take(220).collect();
-    let code = status.code().map_or_else(|| "сигналом".to_string(), |c| format!("з кодом {c}"));
-    Err(if tail.is_empty() { format!("«{name}» завершилась {code}") } else { format!("«{name}» завершилась {code}: {tail}") })
+    let code = status.code().map_or_else(|| t!("сигналом", "by a signal").to_string(), |c| t!("з кодом {c}", "with code {c}"));
+    Err(if tail.is_empty() { t!("«{name}» завершилась {code}", "“{name}” exited {code}") } else { t!("«{name}» завершилась {code}: {tail}", "“{name}” exited {code}: {tail}") })
 }
 
 /// `gio launch` starts the entry exactly like the menu does (Exec, Path, env, field codes);
@@ -787,20 +789,20 @@ fn icon_file(desktop: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn human(b: u64) -> String {
-    if b >= 1 << 30 { format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} МБ", b as f64 / (1u64 << 20) as f64) }
+    if b >= 1 << 30 { t!("{:.1} ГБ", "{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { t!("{:.0} МБ", "{:.0} MB", b as f64 / (1u64 << 20) as f64) }
 }
 
 /// Base/content snaps that were pulled in for other apps: sizes, who uses them, and a prune button.
 fn runtime_group(runtimes: &[Manifest], bin: &adw::Bin, toasts: &adw::ToastOverlay) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
-        .title("Runtime-снапи")
-        .description("Підтягнуті автоматично для інших програм. Те, що ніхто не використовує, можна прибрати.")
+        .title(t!("Runtime-снапи", "Runtime snaps"))
+        .description(t!("Підтягнуті автоматично для інших програм. Те, що ніхто не використовує, можна прибрати.", "Pulled in automatically for other apps. Anything nobody uses can be removed."))
         .margin_bottom(18)
         .margin_start(18)
         .margin_end(18)
         .build();
     let any_unused = runtimes.iter().any(|m| m.used_by.is_empty());
-    let prune = gtk::Button::builder().label("Прибрати невикористані").valign(gtk::Align::Center).sensitive(any_unused).build();
+    let prune = gtk::Button::builder().label(t!("Прибрати невикористані", "Remove unused")).valign(gtk::Align::Center).sensitive(any_unused).build();
     group.set_header_suffix(Some(&prune));
     {
         let (bin, toasts) = (bin.clone(), toasts.clone());
@@ -819,18 +821,18 @@ fn runtime_group(runtimes: &[Manifest], bin: &adw::Bin, toasts: &adw::ToastOverl
                 })
                 .await;
                 toasts.add_toast(adw::Toast::new(&match r {
-                    Ok((0, _)) => "Нічого прибирати".to_string(),
-                    Ok((n, freed)) => format!("Прибрано {n}, звільнено {}", human(freed)),
-                    Err(e) => format!("Помилка: {e}"),
+                    Ok((0, _)) => t!("Нічого прибирати", "Nothing to remove").to_string(),
+                    Ok((n, freed)) => t!("Прибрано {n}, звільнено {}", "Removed {n}, freed {}", human(freed)),
+                    Err(e) => t!("Помилка: {e}", "Error: {e}"),
                 }));
                 refresh(&bin, &toasts, false, false);
             });
         });
     }
     for m in runtimes {
-        let users = if m.used_by.is_empty() { "не використовується".to_string() } else { format!("використовують: {}", m.used_by.join(", ")) };
+        let users = if m.used_by.is_empty() { t!("не використовується", "unused").to_string() } else { t!("використовують: {}", "used by: {}", m.used_by.join(", ")) };
         let row = adw::ActionRow::builder().title(&m.name).subtitle(&users).build();
-        let del = gtk::Button::builder().label("Видалити").valign(gtk::Align::Center).css_classes(["destructive-action"]).sensitive(m.used_by.is_empty()).build();
+        let del = gtk::Button::builder().label(t!("Видалити", "Remove")).valign(gtk::Align::Center).css_classes(["destructive-action"]).sensitive(m.used_by.is_empty()).build();
         row.add_suffix(&del);
         group.add(&row);
         // the size needs a walk over a big tree: do it off the UI thread
@@ -854,8 +856,8 @@ fn runtime_group(runtimes: &[Manifest], bin: &adw::Bin, toasts: &adw::ToastOverl
                 })
                 .await;
                 toasts.add_toast(adw::Toast::new(&match r {
-                    Ok(()) => format!("{id} видалено"),
-                    Err(e) => format!("Помилка: {e}"),
+                    Ok(()) => t!("{id} видалено", "{id} removed"),
+                    Err(e) => t!("Помилка: {e}", "Error: {e}"),
                 }));
                 refresh(&bin, &toasts, false, false);
             });
@@ -872,7 +874,7 @@ fn found_row(group: &adw::PreferencesGroup, f: &Found, check: bool, bin: &adw::B
     group.add(&row);
     // "Add": open the usual install dialog for this file (copies it under ustan, makes a launcher)
     {
-        let add = gtk::Button::builder().label("Додати").tooltip_text("Встановити під керування ustan").valign(gtk::Align::Center).build();
+        let add = gtk::Button::builder().label(t!("Додати", "Add")).tooltip_text(t!("Встановити під керування ustan", "Put under ustan's management")).valign(gtk::Align::Center).build();
         let path = f.path.display().to_string();
         add.connect_clicked(move |_| {
             if let Some(app) = gio::Application::default().and_then(|a| a.downcast::<adw::Application>().ok()) {
@@ -885,20 +887,20 @@ fn found_row(group: &adw::PreferencesGroup, f: &Found, check: bool, bin: &adw::B
     let show = {
         let (actions, row, f, bin, toasts) = (actions.clone(), row.clone(), f.clone(), bin.clone(), toasts.clone());
         move |label: String| {
-            row.set_subtitle(&format!("{} · є оновлення: {label} · {}", f.version.as_deref().unwrap_or("—"), f.path.display()));
-            let upd = gtk::Button::builder().label("Оновити").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+            row.set_subtitle(&t!("{} · є оновлення: {label} · {}", "{} · update available: {label} · {}", f.version.as_deref().unwrap_or("—"), f.path.display()));
+            let upd = gtk::Button::builder().label(t!("Оновити", "Update")).valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
             actions.append(&upd);
             let (f, bin, toasts) = (f.clone(), bin.clone(), toasts.clone());
             upd.connect_clicked(move |b| {
                 b.set_sensitive(false);
-                b.set_label("Оновлюю…");
+                b.set_label(&t!("Оновлюю…", "Updating…"));
                 let (f, bin, toasts) = (f.clone(), bin.clone(), toasts.clone());
                 glib::spawn_future_local(async move {
                     let f2 = f.clone();
                     let r = spawn(move || update::apply_found(&f2, &Dirs::from_env()).map_err(|e| e.to_string())).await;
                     toasts.add_toast(adw::Toast::new(&match &r {
-                        Ok(_) => format!("{} оновлено", f.name),
-                        Err(e) => format!("Не вдалося оновити: {e}"),
+                        Ok(_) => t!("{} оновлено", "{} updated", f.name),
+                        Err(e) => t!("Не вдалося оновити: {e}", "Could not update: {e}"),
                     }));
                     FOUND_UPD.with(|u| u.borrow_mut().remove(&f.path));
                     FOUND.with(|c| *c.borrow_mut() = None); // versions changed: rescan
@@ -931,7 +933,7 @@ fn fill_found(group: &adw::PreferencesGroup, bin: &adw::Bin, toasts: &adw::Toast
         group.set_visible(!list.is_empty());
         return;
     }
-    let loading = adw::ActionRow::builder().title("Шукаю по диску…").build();
+    let loading = adw::ActionRow::builder().title(t!("Шукаю по диску…", "Searching the disk…")).build();
     loading.add_prefix(&adw::Spinner::new());
     group.add(&loading);
     let (group, bin, toasts) = (group.clone(), bin.clone(), toasts.clone());
@@ -964,10 +966,10 @@ mod launch_tests {
     fn a_program_that_dies_right_away_is_reported_with_its_output() {
         let log = std::env::temp_dir().join(format!("ustan-launch-{}.log", std::process::id()));
         let msg = run_watched(&spec("echo first >&2; echo libfuse.so.2: cannot open >&2; exit 3"), &log).unwrap_err();
-        assert!(msg.contains("з кодом 3") && msg.contains("libfuse.so.2"), "{msg}");
+        assert!((msg.contains("з кодом 3") || msg.contains("with code 3")) && msg.contains("libfuse.so.2"), "{msg}");
         assert!(run_watched(&spec("exit 0"), &log).is_ok());
         let missing = LaunchSpec { argv: vec!["/nonexistent/app".into()], cwd: None, terminal: false };
-        assert!(run_watched(&missing, &log).unwrap_err().contains("не запустилась"));
+        assert!(run_watched(&missing, &log).unwrap_err().contains("не запустилась") || run_watched(&missing, &log).unwrap_err().contains("failed to start"));
         let _ = std::fs::remove_file(&log);
     }
 }

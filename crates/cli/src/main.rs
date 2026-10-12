@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use ustan_core::t;
 use ustan_core::{autoupdate, backend, discover, fetch, register, runner, update, dirs::Dirs, manifest::Manifest};
 
 #[derive(Parser)]
@@ -131,8 +132,8 @@ fn install_progress_hook() {
         Event::Download { name, done, total } => {
             let mb = |b: u64| b as f64 / 1_048_576.0;
             match total {
-                Some(t) if t > 0 => eprint!("\r\x1b[2K{name}  {:>3}% ({:.1} / {:.1} МБ)", done * 100 / t, mb(done), mb(t)),
-                _ => eprint!("\r\x1b[2K{name}  {:.1} МБ", mb(done)),
+                Some(t) if t > 0 => eprint!("{}", t!("\r\x1b[2K{name}  {:>3}% ({:.1} / {:.1} МБ)", "\r\x1b[2K{name}  {:>3}% ({:.1} / {:.1} MB)", done * 100 / t, mb(done), mb(t))),
+                _ => eprint!("{}", t!("\r\x1b[2K{name}  {:.1} МБ", "\r\x1b[2K{name}  {:.1} MB", mb(done))),
             }
             let _ = std::io::stderr().flush();
         }
@@ -146,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().cmd {
         Cmd::Inspect { file } => {
             // a URL is downloaded to the cache, looked at, and deleted again
-            let fetched = fetch::is_url(&file).then(|| fetch::download_auto(&file, &dirs.state.join("cache"), file.rsplit('/').next().unwrap_or("файл"))).transpose()?;
+            let fetched = fetch::is_url(&file).then(|| fetch::download_auto(&file, &dirs.state.join("cache"), file.rsplit('/').next().unwrap_or(&t!("файл", "file")))).transpose()?;
             let file = fetched.as_ref().map(|f| f.path.clone()).unwrap_or_else(|| PathBuf::from(&file));
             let _guard = fetched.map(|f| TempFile(f.path));
             let b = backend::pick(&file).ok_or("unsupported package type")?;
@@ -159,11 +160,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(h) => fetch::Expect::Sha256(h.clone()),
                     None => fetch::sidecar_sha256(&source).map(fetch::Expect::Sha256).unwrap_or_default(),
                 };
-                let got = fetch::download_checked(&source, &dirs.state.join("cache"), &expect, &source.rsplit('/').next().unwrap_or("файл").to_string())?;
+                let got = fetch::download_checked(&source, &dirs.state.join("cache"), &expect, &source.rsplit('/').next().unwrap_or(&t!("файл", "file")).to_string())?;
                 eprintln!();
                 match got.verified {
-                    Some(how) => eprintln!("{how}: перевірено"),
-                    None => eprintln!("увага: контрольної суми немає ({}.sha256 не знайдено), завантаження не перевірено", source.split(['?', '#']).next().unwrap_or(&source)),
+                    Some(how) => eprintln!("{}", t!("{how}: перевірено", "{how}: verified")),
+                    None => eprintln!("{}", t!("увага: контрольної суми немає ({}.sha256 не знайдено), завантаження не перевірено", "warning: no checksum ({}.sha256 not found), download not verified", source.split(['?', '#']).next().unwrap_or(&source))),
                 }
                 etag = got.validator;
                 got.path
@@ -173,7 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let b = backend::pick(&file).ok_or("unsupported package type")?;
             if let Ok(info) = b.inspect(&file) {
                 if let Some(w) = info.warning {
-                    eprintln!("увага: {w}");
+                    eprintln!("{}", t!("увага: {w}", "warning: {w}"));
                 }
             }
             let mut m = b.install(&file, &dirs, &backend::Opts { installer, installer_args: installer_args.as_deref().unwrap_or("").split_whitespace().map(String::from).collect() })?;
@@ -184,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = std::fs::remove_file(&file); // installed copy lives in ~/.local/opt
             }
             for n in &m.notes {
-                eprintln!("увага: {n}");
+                eprintln!("{}", t!("увага: {n}", "warning: {n}"));
             }
             println!("installed {} {}", m.id, m.version.as_deref().unwrap_or(""));
         }
@@ -215,17 +216,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             for m in apps {
                 match update::check(&m) {
-                    Ok(update::Status::Available(v)) if check => println!("{}\tє оновлення ({v})", m.id),
+                    Ok(update::Status::Available(v)) if check => println!("{}", t!("{}\tє оновлення ({v})", "{}\tupdate available ({v})", m.id)),
                     Ok(update::Status::Available(v)) => {
-                        println!("{}\tоновлюю ({v})…", m.id);
+                        println!("{}", t!("{}\tоновлюю ({v})…", "{}\tupdating ({v})…", m.id));
                         match update::apply(&m, &dirs) {
-                            Ok(_) => println!("{}\tоновлено", m.id),
-                            Err(e) => println!("{}\tпомилка: {e}", m.id),
+                            Ok(_) => println!("{}", t!("{}\tоновлено", "{}\tupdated", m.id)),
+                            Err(e) => println!("{}", t!("{}\tпомилка: {e}", "{}\terror: {e}", m.id)),
                         }
                     }
-                    Ok(update::Status::UpToDate) => println!("{}\tактуальна", m.id),
+                    Ok(update::Status::UpToDate) => println!("{}", t!("{}\tактуальна", "{}\tup to date", m.id)),
                     Ok(update::Status::Unknown(why)) => println!("{}\t? {why}", m.id),
-                    Err(e) => println!("{}\tне вдалося перевірити: {e}", m.id),
+                    Err(e) => println!("{}", t!("{}\tне вдалося перевірити: {e}", "{}\tcould not check: {e}", m.id)),
                 }
             }
         }
@@ -235,38 +236,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ver = f.version.as_deref().unwrap_or("-");
                 match update::check_found(&f) {
                     Ok(update::Status::Available(v)) if update => {
-                        println!("{}\t{ver}\t{}\tоновлюю ({v})…", f.name, f.path.display());
+                        println!("{}", t!("{}\t{ver}\t{}\tоновлюю ({v})…", "{}\t{ver}\t{}\tupdating ({v})…", f.name, f.path.display()));
                         match update::apply_found(&f, &dirs) {
-                            Ok(new) => println!("\t\t\tоновлено до {}", new.as_deref().unwrap_or("?")),
-                            Err(e) => println!("\t\t\tпомилка: {e}"),
+                            Ok(new) => println!("{}", t!("\t\t\tоновлено до {}", "\t\t\tupdated to {}", new.as_deref().unwrap_or("?"))),
+                            Err(e) => println!("{}", t!("\t\t\tпомилка: {e}", "\t\t\terror: {e}")),
                         }
                     }
-                    Ok(update::Status::Available(v)) => println!("{}\t{ver}\t{}\tє оновлення ({v})", f.name, f.path.display()),
-                    Ok(update::Status::UpToDate) => println!("{}\t{ver}\t{}\tактуальна", f.name, f.path.display()),
+                    Ok(update::Status::Available(v)) => println!("{}", t!("{}\t{ver}\t{}\tє оновлення ({v})", "{}\t{ver}\t{}\tupdate available ({v})", f.name, f.path.display())),
+                    Ok(update::Status::UpToDate) => println!("{}", t!("{}\t{ver}\t{}\tактуальна", "{}\t{ver}\t{}\tup to date", f.name, f.path.display())),
                     Ok(update::Status::Unknown(why)) => println!("{}\t{ver}\t{}\t? {why}", f.name, f.path.display()),
-                    Err(e) => println!("{}\t{ver}\t{}\tне вдалося перевірити: {e}", f.name, f.path.display()),
+                    Err(e) => println!("{}", t!("{}\t{ver}\t{}\tне вдалося перевірити: {e}", "{}\t{ver}\t{}\tcould not check: {e}", f.name, f.path.display())),
                 }
             }
         }
         Cmd::Watch { once } => {
             if !once {
-                eprintln!("слідкую за оновленнями (перша перевірка за 2 хв)…");
+                eprintln!("{}", t!("слідкую за оновленнями (перша перевірка за 2 хв)…", "watching for updates (first check in 2 min)…"));
             }
             autoupdate::watch(&dirs, once)?;
         }
         Cmd::Autoupdate { cmd } => match cmd {
             None => {
                 let c = ustan_core::config::load(&dirs).autoupdate;
-                println!("перевірка кожні {} год; оновлення: {}", c.interval_hours, if c.apply { "встановлюються самі" } else { "лише сповіщення" });
+                println!("{}", t!("перевірка кожні {} год; оновлення: {}", "checking every {} h; updates: {}", c.interval_hours, if c.apply { "встановлюються самі" } else { "лише сповіщення" }));
             }
             Some(AutoCmd::Enable { apply, interval, niri }) => {
                 println!("{}", autoupdate::enable(&dirs, apply, interval)?);
                 if niri {
                     let cfg = PathBuf::from(std::env::var_os("HOME").ok_or("HOME not set")?).join(".config/niri/config.kdl");
                     if autoupdate::niri_set(&cfg, true)? {
-                        println!("додано в {}: {}  (резервна копія поруч)", cfg.display(), autoupdate::NIRI_LINE);
+                        println!("{}", t!("додано в {}: {}  (резервна копія поруч)", "added to {}: {}  (backup next to it)", cfg.display(), autoupdate::NIRI_LINE));
                     } else {
-                        println!("у конфігу niri цей рядок уже є");
+                        println!("{}", t!("у конфігу niri цей рядок уже є", "this line is already in the niri config"));
                     }
                 }
             }
@@ -278,7 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let current = runner::pick(&dirs, &home).map(|r| r.name);
                 let all = runner::discover(&home);
                 if all.is_empty() {
-                    println!("Wine не знайдено: немає `wine` у PATH, PortProton чи Steam Proton");
+                    println!("{}", t!("Wine не знайдено: немає `wine` у PATH, PortProton чи Steam Proton", "Wine not found: no `wine` in PATH, PortProton or Steam Proton"));
                 }
                 for r in all {
                     println!("{} {}", if Some(&r.name) == current.as_ref() { "*" } else { " " }, r.name);
@@ -286,27 +287,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(RunnerCmd::Get { what }) => {
                 if what != "cachyos" {
-                    return Err("поки що можна завантажити лише `cachyos`".into());
+                    return Err(t!("поки що можна завантажити лише `cachyos`", "only `cachyos` can be downloaded for now").into());
                 }
                 let r = runner::get_cachyos(&dirs)?;
                 runner::set(&dirs, &r.name)?;
-                println!("встановлено і вибрано: {}", r.name);
+                println!("{}", t!("встановлено і вибрано: {}", "installed and selected: {}", r.name));
             }
             Some(RunnerCmd::Use { name }) => {
                 let r = runner::set(&dirs, &name)?;
-                println!("тепер Windows-програми запускає: {}", r.name);
+                println!("{}", t!("тепер Windows-програми запускає: {}", "Windows programs now run with: {}", r.name));
             }
         },
         Cmd::List => {
             for m in Manifest::list(&dir)? {
-                let rt = if m.runtime { if m.used_by.is_empty() { "\t[runtime, не використовується]".to_string() } else { format!("\t[runtime: {}]", m.used_by.join(", ")) } } else { String::new() };
+                let rt = if m.runtime { if m.used_by.is_empty() { t!("\t[runtime, не використовується]", "\t[runtime, unused]").to_string() } else { format!("\t[runtime: {}]", m.used_by.join(", ")) } } else { String::new() };
                 println!("{}\t{}\t{}{rt}", m.id, m.version.as_deref().unwrap_or("-"), m.kind);
             }
         }
         Cmd::Remove { id, force } => {
             let m = Manifest::load(&dir, &id)?;
             if m.runtime && !m.used_by.is_empty() && !force {
-                return Err(format!("`{id}` використовують: {}. Видалення їх зламає (--force, щоб усе одно видалити)", m.used_by.join(", ")).into());
+                return Err(t!("`{id}` використовують: {}. Видалення їх зламає (--force, щоб усе одно видалити)", "`{id}` is used by: {}. Removing it would break them (--force to remove anyway)", m.used_by.join(", ")).into());
             }
             m.uninstall(&dir)?;
         }
@@ -316,12 +317,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for m in &unused {
                 let sz = m.size();
                 total += sz;
-                println!("{}\t{:.0} МБ{}", m.id, sz as f64 / 1_048_576.0, if dry_run { "\t(буде видалено)" } else { "" });
+                println!("{}", t!("{}\t{:.0} МБ{}", "{}\t{:.0} MB{}", m.id, sz as f64 / 1_048_576.0, if dry_run { "\t(буде видалено)" } else { "" }));
                 if !dry_run {
                     m.uninstall(&dir)?;
                 }
             }
-            println!("{} {:.1} ГБ ({} шт.)", if dry_run { "можна звільнити" } else { "звільнено" }, total as f64 / 1_073_741_824.0, unused.len());
+            println!("{}", t!("{} {:.1} ГБ ({} шт.)", "{} {:.1} GB ({} items)", if dry_run { "можна звільнити" } else { "звільнено" }, total as f64 / 1_073_741_824.0, unused.len()));
         }
     }
     Ok(())

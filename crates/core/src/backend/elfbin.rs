@@ -40,7 +40,7 @@ impl Backend for ElfBin {
 
     fn install(&self, path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> {
         if !self.detect(path) {
-            return Err(Error::Format("не виконуваний файл ELF".into()));
+            return Err(Error::Format(t!("не виконуваний файл ELF", "not an ELF executable").into()));
         }
         let (name, version) = names(path);
         let file = path.file_name().unwrap().to_owned();

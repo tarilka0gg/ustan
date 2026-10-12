@@ -75,7 +75,7 @@ pub fn download_checked(url: &str, cache: &Path, expect: &Expect, label: &str) -
     std::fs::create_dir_all(cache)?;
     let dst = cache.join(file_name(url));
     progress::check()?;
-    let resp = ureq::get(url).call().map_err(|e| Error::Format(format!("завантаження: {e}")))?;
+    let resp = ureq::get(url).call().map_err(|e| Error::Format(t!("завантаження: {e}", "download: {e}")))?;
     let total = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok());
     let validator = validator(&resp);
     let mut r = resp.into_reader();
@@ -114,14 +114,14 @@ pub fn download_checked(url: &str, cache: &Path, expect: &Expect, label: &str) -
         Expect::Sha256(want) => {
             let got = hex(&s256.finalize());
             if !got.eq_ignore_ascii_case(want.trim()) {
-                return Err(fail(&dst, Error::Format(format!("sha256 не збігається: очікувалось {want}, отримано {got}"))));
+                return Err(fail(&dst, Error::Format(t!("sha256 не збігається: очікувалось {want}, отримано {got}", "sha256 mismatch: expected {want}, got {got}"))));
             }
             Some("sha256")
         }
         Expect::Sha3_384(want) => {
             let got = hex(&sha3::Digest::finalize(s3));
             if !got.eq_ignore_ascii_case(want.trim()) {
-                return Err(fail(&dst, Error::Format(format!("sha3-384 не збігається: очікувалось {want}, отримано {got}"))));
+                return Err(fail(&dst, Error::Format(t!("sha3-384 не збігається: очікувалось {want}, отримано {got}", "sha3-384 mismatch: expected {want}, got {got}"))));
             }
             Some("sha3-384")
         }
@@ -202,7 +202,7 @@ mod tests {
         assert!(*events.lock().unwrap() >= 1);
 
         let bad = download_checked(&url, &dir, &Expect::Sha256("0".repeat(64)), "test");
-        assert!(matches!(bad, Err(Error::Format(m)) if m.contains("не збігається")));
+        assert!(matches!(bad, Err(Error::Format(m)) if (m.contains("не збігається") || m.contains("mismatch"))));
         assert!(!dir.join("file.bin").exists(), "a mismatching download must not stay in the cache");
 
         progress::cancel();

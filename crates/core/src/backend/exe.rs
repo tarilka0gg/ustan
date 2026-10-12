@@ -197,7 +197,7 @@ fn install_installer(path: &Path, dirs: &Dirs, opts: &Opts) -> Result<Manifest> 
         Ok(s) => s,
         Err(e) => {
             cleanup(&files);
-            return Err(Error::Format(format!("не вдалося запустити Wine: {e}")));
+            return Err(Error::Format(t!("не вдалося запустити Wine: {e}", "could not start Wine: {e}")));
         }
     };
     let _ = Command::new(&wineserver).arg("-w").env("WINEPREFIX", &prefix).status();

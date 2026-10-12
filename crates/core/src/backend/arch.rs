@@ -65,7 +65,7 @@ impl Backend for Arch {
             |root| {
                 let mut ar = tar::Archive::new(tar.as_slice());
                 ar.set_preserve_permissions(true);
-                crate::progress::status("Розпаковую…");
+                crate::progress::status(t!("Розпаковую…", "Unpacking…"));
                 for e in ar.entries()? {
                     crate::progress::check()?;
                     let mut e = e?;

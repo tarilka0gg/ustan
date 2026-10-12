@@ -167,7 +167,7 @@ export PATH="$SNAP/.ustan-run/bin:$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/
 
 fn extract(fs: &Fs, root: &Path) -> Result<()> {
     let canon = root.canonicalize()?;
-    crate::progress::status("Розпаковую…");
+    crate::progress::status(t!("Розпаковую…", "Unpacking…"));
     for n in fs.files() {
         crate::progress::check()?;
         let Some(rel) = safe_rel(&n.fullpath.to_string_lossy()) else { continue };
@@ -251,7 +251,7 @@ fn ensure_provider(name: &str, dirs: &Dirs, opts: &Opts) -> Result<PathBuf> {
     if root.join("meta/snap.yaml").exists() {
         return Ok(root);
     }
-    crate::progress::status(format!("Завантажую runtime-снап {name}…"));
+    crate::progress::status(t!("Завантажую runtime-снап {name}…", "Downloading runtime snap {name}…"));
     let info = store_info(name)?;
     let (url, sha3) = (info.url, info.sha3_384);
     // the store publishes SHA3-384 of every revision: a tampered or truncated download is rejected
@@ -301,7 +301,7 @@ fn link_plug(root: &Path, plug: &Plug, dirs: &Dirs, opts: &Opts) -> Result<()> {
 
 fn warning(m: &Meta) -> Option<String> {
     (!m.providers.is_empty())
-        .then(|| format!("потребує runtime-снапи ({}): ustan завантажить їх сам, якщо їх ще немає (можуть бути сотні МБ). Запускається в пісочниці bubblewrap, без snapd робота не гарантована", m.providers.join(", ")))
+        .then(|| t!("потребує runtime-снапи ({}): ustan завантажить їх сам, якщо їх ще немає (можуть бути сотні МБ). Запускається в пісочниці bubblewrap, без snapd робота не гарантована", "needs runtime snaps ({}): ustan will download them if missing (can be hundreds of MB). Runs in a bubblewrap sandbox; without snapd it is not guaranteed to work", m.providers.join(", ")))
 }
 
 fn icon_of(fs: &Fs) -> Option<Icon> {
@@ -373,7 +373,7 @@ impl Backend for Snap {
                     None
                 } else {
                     if which("bwrap").is_none() {
-                        return Err(Error::Format("для цього snap потрібен bubblewrap (команда `bwrap`), його немає в PATH".into()));
+                        return Err(Error::Format(t!("для цього snap потрібен bubblewrap (команда `bwrap`), його немає в PATH", "this snap needs bubblewrap (`bwrap`), which is not in PATH").into()));
                     }
                     match m.base.as_deref().filter(|b| *b != "bare") {
                         Some(b) => Some(ensure_provider(b, dirs, opts)?),

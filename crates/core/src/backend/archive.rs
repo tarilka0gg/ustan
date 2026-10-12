@@ -99,7 +99,7 @@ fn list(d: &Data) -> Result<Vec<Entry>> {
     match d {
         Data::Tar(t) => list_tar(tar::Archive::new(t.as_slice()), &mut out)?,
         Data::TarFile(p, c) => {
-            crate::progress::status("Читаю архів…");
+            crate::progress::status(t!("Читаю архів…", "Reading archive…"));
             list_tar(tar::Archive::new(tar_stream(p, c)?), &mut out)?
         }
         Data::SevenZ(z) => {
@@ -362,12 +362,12 @@ fn plan(path: &Path, d: &Data) -> Result<Plan> {
         let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true, bin: None, pack: false });
     }
-    Err(Error::Format("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows".into()))
+    Err(Error::Format(t!("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows", "found neither a Linux executable nor a Windows program in the archive").into()))
 }
 
 fn unpack_tar<R: Read>(mut ar: tar::Archive<R>, root: &Path) -> Result<()> {
     ar.set_preserve_permissions(true);
-    crate::progress::status("Розпаковую…");
+    crate::progress::status(t!("Розпаковую…", "Unpacking…"));
     for e in ar.entries()? {
         crate::progress::check()?;
         e?.unpack_in(root)?;
@@ -384,7 +384,7 @@ fn extract(d: &Data, root: &Path) -> Result<()> {
             let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;
             r.for_each_entries(|e, rd| {
                 if crate::progress::cancelled() {
-                    return Err(sevenz_rust::Error::other("скасовано"));
+                    return Err(sevenz_rust::Error::other(t!("скасовано", "cancelled")));
                 }
                 let Some(rel) = safe_rel(e.name()) else {
                     std::io::copy(rd, &mut std::io::sink())?;
@@ -448,7 +448,7 @@ impl Backend for Archive {
     fn inspect(&self, path: &Path) -> Result<Info> {
         let d = open(path)?;
         let p = plan(path, &d)?;
-        let warning = (p.wine && !crate::runner::available(&Dirs::from_env())).then(|| "це програма для Windows, а Wine не знайдено (ні в PATH, ні PortProton, ні Steam Proton)".to_string());
+        let warning = (p.wine && !crate::runner::available(&Dirs::from_env())).then(|| t!("це програма для Windows, а Wine не знайдено (ні в PATH, ні PortProton, ні Steam Proton)", "this is a Windows program and Wine was not found (not in PATH, PortProton or Steam Proton)").to_string());
         Ok(Info { id: p.id, name: p.name, version: version_of(&stem(path)), kind: "archive", icon: None, warning })
     }
 
@@ -585,7 +585,7 @@ fn makeself_payload(bytes: &[u8]) -> Result<&[u8]> {
     let head = &bytes[..bytes.len().min(16 * 1024)];
     let text = String::from_utf8_lossy(head);
     if !text.contains("Makeself") {
-        return Err(Error::Format("це не makeself-архів".into()));
+        return Err(Error::Format(t!("це не makeself-архів", "not a makeself archive").into()));
     }
     let skip: usize = text
         .lines()
