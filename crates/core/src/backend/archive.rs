@@ -260,8 +260,8 @@ fn setup_wine_pack(root: &Path, dirs: &Dirs, id: &str, name: &str, exe: &Path, f
     if let Ok((w, _, r)) = crate::runner::ensure(dirs) {
         settings.push_str("export USE_SYSTEM_WINE=1\n");
         if let Some(rr) = &r.root {
-            if !rr.join("bin/wine").is_file() {
-                settings.push_str("export WINEARCH=win64\n"); // wow64 build: runs 32-bit games in a 64-bit prefix
+            if !rr.join("lib/wine/i386-unix").is_dir() && !rr.join("lib32/wine/i386-unix").is_dir() {
+                settings.push_str("export WINEARCH=win64\n"); // wow64 build (no 32-bit unix side): runs 32-bit games in a 64-bit prefix
             }
             let dll = rr.join("lib/wine/dxvk/i386-windows/d3d9.dll");
             let dlls = pkg.join("game_info/dlls");
