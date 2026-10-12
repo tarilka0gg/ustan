@@ -237,6 +237,35 @@ struct Plan {
     gui: bool,
     /// A Windows program: launched through Wine.
     wine: bool,
+    /// Command name in ~/.local/bin when the program's own file name says nothing (`start.sh`).
+    bin: Option<String>,
+}
+
+/// File names that do not name the program. A game or app shipped as `Foo/start.sh` is "Foo".
+fn is_generic(file_stem: &str) -> bool {
+    ["start", "run", "launch", "launcher", "startup", "play"].contains(&file_stem.to_lowercase().as_str())
+}
+
+/// Name of the program: the file's own, or (for `start.sh` and alike) the archive's top directory
+/// or file name, without platform noise like `_Linux` / `-x86_64`.
+fn program_name(exe: &Path, archive: &Path) -> (String, bool) {
+    let own = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if !is_generic(&own) {
+        return (own, false);
+    }
+    let mut c = exe.components();
+    let top = (exe.components().count() > 1).then(|| c.next().map(|x| x.as_os_str().to_string_lossy().into_owned())).flatten();
+    let mut n = top.unwrap_or_else(|| stem(archive));
+    let low = n.to_lowercase();
+    for noise in ["_linux", "-linux", "_x86_64", "-x86_64", "_amd64", "-amd64", "_x64", "-x64", "_portable", "-portable"] {
+        if let Some(i) = low.rfind(noise) {
+            if i > 0 && i + noise.len() == low.len() {
+                n.truncate(i);
+                break;
+            }
+        }
+    }
+    (n, true)
 }
 
 fn title(name: &str) -> String {
@@ -247,13 +276,14 @@ fn title(name: &str) -> String {
 fn plan(path: &Path, d: &Data) -> Result<Plan> {
     let entries = list(d)?;
     if let Some(e) = main_exe(&entries, &stem(path)) {
-        let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        return Ok(Plan { id: slug(&name), name: title(&name), exe: e.path.clone(), gui: looks_gui(&entries), wine: false });
+        let (name, generic) = program_name(&e.path, path);
+        let id = slug(&name);
+        return Ok(Plan { bin: generic.then(|| id.clone()), id, name: title(&name), exe: e.path.clone(), gui: looks_gui(&entries), wine: false });
     }
     // No Linux program: a portable Windows app in a zip/7z is common, run it through Wine.
     if let Some(e) = main_win_exe(&entries, &stem(path)) {
         let name = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true });
+        return Ok(Plan { id: slug(&name), name, exe: e.path.clone(), gui: true, wine: true, bin: None });
     }
     Err(Error::Format("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows".into()))
 }
@@ -381,7 +411,7 @@ impl Backend for Archive {
                 if files.len() > 1 {
                     return Ok(()); // the archive shipped its own launchers (usr/share/applications)
                 }
-                super::tree::make_launcher(root, dirs, id, &p.name, &exe, p.gui || super::tree::is_gui_exe(&exe), None, files)?;
+                super::tree::make_launcher(root, dirs, id, &p.name, &exe, p.gui || super::tree::is_gui_exe(&exe), p.bin.as_deref(), files)?;
                 Ok(())
             },
         )
@@ -391,6 +421,14 @@ impl Backend for Archive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_program_names_come_from_the_archive() {
+        let a = Path::new("/x/NFSCarbon_Linux.tar.xz");
+        assert_eq!(program_name(Path::new("NFSCarbon/RUS/start.sh"), a), ("NFSCarbon".to_string(), true));
+        assert_eq!(program_name(Path::new("start.sh"), a), ("NFSCarbon".to_string(), true));
+        assert_eq!(program_name(Path::new("bin/rg"), a), ("rg".to_string(), false));
+    }
 
     #[test]
     fn extract_to_unpacks_a_zip_of_plain_files() {
