@@ -72,3 +72,20 @@ test {
     _ = ar;
     _ = elf;
 }
+
+const xzpar = @import("xzpar.zig");
+
+/// Open a multi-Block .xz for parallel decoding. Null when it is not one (single Block, several
+/// Streams, unreadable): the caller falls back to a plain sequential decoder.
+export fn ustan_xz_open(path: [*]const u8, len: usize, threads: usize) ?*xzpar.Reader {
+    return xzpar.open(path[0..len], threads);
+}
+
+/// Next decompressed bytes in file order. 0 = end, negative = decode error.
+export fn ustan_xz_read(r: *xzpar.Reader, out: [*]u8, cap: usize) isize {
+    return xzpar.read(r, out[0..cap]);
+}
+
+export fn ustan_xz_close(r: *xzpar.Reader) void {
+    xzpar.close(r);
+}

@@ -70,6 +70,11 @@ fn open(path: &Path) -> Result<Data> {
 }
 
 fn tar_stream(path: &Path, name: &str) -> Result<Box<dyn Read>> {
+    if name == ".xz" {
+        if let Some(r) = crate::xzpar::XzPar::open(path) {
+            return Ok(Box::new(std::io::BufReader::with_capacity(1 << 20, r)));
+        }
+    }
     decompress_reader(name, std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(path)?))
 }
 

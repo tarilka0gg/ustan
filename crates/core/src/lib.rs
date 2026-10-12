@@ -1,4 +1,5 @@
 pub mod ar;
+mod xzpar;
 pub mod autoupdate;
 pub mod backend;
 pub mod desktop;
