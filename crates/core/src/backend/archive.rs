@@ -1,7 +1,7 @@
 //! Plain archives (`.tar.gz|xz|zst|bz2`, `.tgz`, `.zip`): unpack, find the main executable and
 //! make it launchable. GUI-looking apps (icons/.desktop inside) get a launcher; the rest are CLI tools
 //! and get a symlink in `~/.local/bin`.
-use super::tree::{decompress, dest, install_tree, safe_rel, Spec};
+use super::tree::{decompress, decompress_reader, dest, install_tree, safe_rel, Spec};
 use super::{slug, Backend, Info, Opts};
 use crate::{dirs::Dirs, manifest::Manifest, pe, Error, Result};
 use std::io::{Cursor, Read};
@@ -39,37 +39,62 @@ struct Entry {
 
 enum Data {
     Tar(Vec<u8>),
+    /// A tar on disk with its compression suffix, decoded as a stream (archives can be many GB).
+    TarFile(PathBuf, &'static str),
     Zip(Vec<u8>),
     SevenZ(Vec<u8>),
 }
 
 fn open(path: &Path) -> Result<Data> {
-    let bytes = std::fs::read(path)?;
     if is_zip(path) {
-        return Ok(Data::Zip(bytes));
+        return Ok(Data::Zip(std::fs::read(path)?));
     }
     if is_7z(path) {
-        return Ok(Data::SevenZ(bytes));
+        return Ok(Data::SevenZ(std::fs::read(path)?));
     }
     let n = lower(path);
-    let name = if n.ends_with(".tgz") { ".tgz" } else if n.ends_with(".txz") { ".xz" } else if n.ends_with(".tbz2") { ".bz2" } else { &n };
-    Ok(Data::Tar(decompress(name, &bytes)?))
+    let name = if n.ends_with(".tgz") {
+        ".tgz"
+    } else if n.ends_with(".txz") || n.ends_with(".xz") {
+        ".xz"
+    } else if n.ends_with(".tbz2") || n.ends_with(".bz2") {
+        ".bz2"
+    } else if n.ends_with(".gz") {
+        ".gz"
+    } else if n.ends_with(".zst") {
+        ".zst"
+    } else {
+        ".tar"
+    };
+    Ok(Data::TarFile(path.to_owned(), name))
+}
+
+fn tar_stream(path: &Path, name: &str) -> Result<Box<dyn Read>> {
+    decompress_reader(name, std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(path)?))
+}
+
+fn list_tar<R: Read>(mut ar: tar::Archive<R>, out: &mut Vec<Entry>) -> Result<()> {
+    for e in ar.entries()? {
+        crate::progress::check()?;
+        let mut e = e?;
+        if !e.header().entry_type().is_file() {
+            continue;
+        }
+        let Some(p) = safe_rel(&e.path()?.to_string_lossy()) else { continue };
+        let mut magic = [0u8; 4];
+        let _ = e.read(&mut magic);
+        out.push(Entry { path: p, mode: e.header().mode()?, size: e.header().size()?, magic });
+    }
+    Ok(())
 }
 
 fn list(d: &Data) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     match d {
-        Data::Tar(t) => {
-            for e in tar::Archive::new(t.as_slice()).entries()? {
-                let mut e = e?;
-                if !e.header().entry_type().is_file() {
-                    continue;
-                }
-                let Some(p) = safe_rel(&e.path()?.to_string_lossy()) else { continue };
-                let mut magic = [0u8; 4];
-                let _ = e.read(&mut magic);
-                out.push(Entry { path: p, mode: e.header().mode()?, size: e.header().size()?, magic });
-            }
+        Data::Tar(t) => list_tar(tar::Archive::new(t.as_slice()), &mut out)?,
+        Data::TarFile(p, c) => {
+            crate::progress::status("Читаю архів…");
+            list_tar(tar::Archive::new(tar_stream(p, c)?), &mut out)?
         }
         Data::SevenZ(z) => {
             let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;
@@ -228,17 +253,20 @@ fn plan(path: &Path, d: &Data) -> Result<Plan> {
     Err(Error::Format("не знайшов в архіві ні виконуваного файлу для Linux, ні програми для Windows".into()))
 }
 
+fn unpack_tar<R: Read>(mut ar: tar::Archive<R>, root: &Path) -> Result<()> {
+    ar.set_preserve_permissions(true);
+    crate::progress::status("Розпаковую…");
+    for e in ar.entries()? {
+        crate::progress::check()?;
+        e?.unpack_in(root)?;
+    }
+    Ok(())
+}
+
 fn extract(d: &Data, root: &Path) -> Result<()> {
     match d {
-        Data::Tar(t) => {
-            let mut ar = tar::Archive::new(t.as_slice());
-            ar.set_preserve_permissions(true);
-            crate::progress::status("Розпаковую…");
-            for e in ar.entries()? {
-                crate::progress::check()?;
-                e?.unpack_in(root)?;
-            }
-        }
+        Data::Tar(t) => unpack_tar(tar::Archive::new(t.as_slice()), root)?,
+        Data::TarFile(p, c) => unpack_tar(tar::Archive::new(tar_stream(p, c)?), root)?,
         Data::SevenZ(z) => {
             let canon = root.canonicalize()?;
             let mut r = sevenz_rust::SevenZReader::new(Cursor::new(z), z.len() as u64, sevenz_rust::Password::empty()).map_err(|e| Error::Format(format!("7z: {e}")))?;

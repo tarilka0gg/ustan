@@ -216,6 +216,24 @@ pub fn decompress(name: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Streaming counterpart of [`decompress`]: nothing is buffered, so a multi-GB archive costs no memory.
+pub fn decompress_reader(name: &str, r: impl Read + 'static) -> Result<Box<dyn Read>> {
+    let n = name.to_lowercase();
+    Ok(if n.ends_with(".gz") || n.ends_with(".tgz") {
+        Box::new(flate2::read::GzDecoder::new(r))
+    } else if n.ends_with(".xz") {
+        Box::new(liblzma::read::XzDecoder::new(r))
+    } else if n.ends_with(".zst") {
+        Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(|e| Error::Format(format!("zstd: {e}")))?)
+    } else if n.ends_with(".bz2") {
+        Box::new(bzip2::read::BzDecoder::new(r))
+    } else if n.ends_with(".tar") {
+        Box::new(r)
+    } else {
+        return Err(Error::Format(format!("unsupported compression: {name}")));
+    })
+}
+
 /// Relative path that leads from directory `from` to `to` (both absolute, same root).
 pub fn relative(from: &Path, to: &Path) -> PathBuf {
     let f: Vec<_> = from.components().collect();
