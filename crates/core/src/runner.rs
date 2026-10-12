@@ -36,6 +36,70 @@ fn tool_root(dir: &Path) -> Option<PathBuf> {
     [dir.to_path_buf(), dir.join("files")].into_iter().find(|r| r.join("bin").is_dir())
 }
 
+fn runners_dir(home: &Path) -> PathBuf {
+    home.join(".local/share/ustan/runners")
+}
+
+const CACHYOS_API: &str = "https://api.github.com/repos/CachyOS/proton-cachyos/releases/latest";
+
+fn has_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("bmi2") && std::arch::is_x86_feature_detected!("fma")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Download the latest proton-cachyos (CachyOS/proton-cachyos on GitHub; the x86_64_v3 build when the
+/// CPU has AVX2), check its sha512 and unpack it into ustan's runners dir. Returns its runner.
+pub fn get_cachyos(dirs: &Dirs) -> Result<Runner> {
+    use sha2::{Digest, Sha512};
+    let home = home();
+    let rel: serde_json::Value = ureq::get(CACHYOS_API)
+        .set("User-Agent", "ustan")
+        .call()
+        .map_err(|e| Error::Format(format!("GitHub: {e}")))?
+        .into_json()
+        .map_err(|e| Error::Format(format!("GitHub: {e}")))?;
+    let assets = rel["assets"].as_array().ok_or_else(|| Error::Format("GitHub: у релізі немає файлів".into()))?;
+    let suffix = if has_avx2() { "-x86_64_v3.tar.xz" } else { "-x86_64.tar.xz" };
+    let url_of = |name_end: &str| assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(name_end))).and_then(|a| a["browser_download_url"].as_str());
+    let url = url_of(suffix).ok_or_else(|| Error::Format(format!("у релізі немає *{suffix}")))?;
+    let name = url.rsplit('/').next().unwrap_or("proton-cachyos").trim_end_matches(".tar.xz").to_string();
+    let dest = runners_dir(&home).join(&name);
+    if let Some(r) = tool_root(&dest).and_then(|r| from_root(format!("ustan/{name}"), &r, 3)) {
+        return Ok(r); // already here
+    }
+    let want = url_of(&suffix.replace(".tar.xz", ".sha512sum"))
+        .and_then(|u| ureq::get(u).set("User-Agent", "ustan").call().ok())
+        .and_then(|r| r.into_string().ok())
+        .and_then(|t| t.split_whitespace().next().map(str::to_lowercase));
+    let got = crate::fetch::download_checked(url, &dirs.state.join("cache"), &crate::fetch::Expect::None, &name)?;
+    if let Some(want) = want {
+        let mut h = Sha512::new();
+        std::io::copy(&mut std::fs::File::open(&got.path)?, &mut h)?;
+        let have: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        if have != want {
+            let _ = std::fs::remove_file(&got.path);
+            return Err(Error::Format("sha512 не збігається: файл пошкоджений".into()));
+        }
+    }
+    crate::progress::status("Розпаковую Proton…");
+    let tmp = runners_dir(&home).join(format!(".{name}.part"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    crate::backend::archive::extract_to(&got.path, &tmp)?;
+    // the tarball holds one directory; take it, or the tmp dir itself
+    let inner = subdirs(&tmp);
+    let src = if inner.len() == 1 && tool_root(&inner[0]).is_some() { inner[0].clone() } else { tmp.clone() };
+    std::fs::rename(&src, &dest)?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_file(&got.path);
+    tool_root(&dest).and_then(|r| from_root(format!("ustan/{name}"), &r, 3)).ok_or_else(|| Error::Format("у архіві немає bin/wine".into()))
+}
+
 /// Every Wine we can find, best first.
 pub fn discover(home: &Path) -> Vec<Runner> {
     let mut out = Vec::new();
@@ -48,6 +112,12 @@ pub fn discover(home: &Path) -> Vec<Runner> {
         let n = name_of(&d);
         let rank = if n.starts_with("WINE") { 1 } else if n.starts_with("PROTON_LG") { 2 } else { 3 };
         if let Some(r) = tool_root(&d).and_then(|r| from_root(format!("portproton/{n}"), &r, rank)) {
+            out.push(r);
+        }
+    }
+    // runners ustan downloaded itself (`ustan runner get cachyos`)
+    for d in subdirs(&runners_dir(home)) {
+        if let Some(r) = tool_root(&d).and_then(|r| from_root(format!("ustan/{}", name_of(&d)), &r, 3)) {
             out.push(r);
         }
     }

@@ -115,6 +115,8 @@ enum AutoCmd {
 enum RunnerCmd {
     /// Use this runner (a name from `ustan runner`, or a path to a wine binary)
     Use { name: String },
+    /// Download a runner and make it the one in use. Now: `cachyos` (proton-cachyos from GitHub)
+    Get { what: String },
 }
 
 /// Print downloads as `name  42% (12.3 / 29.2 МБ)` on one line, other steps as their own line.
@@ -281,6 +283,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for r in all {
                     println!("{} {}", if Some(&r.name) == current.as_ref() { "*" } else { " " }, r.name);
                 }
+            }
+            Some(RunnerCmd::Get { what }) => {
+                if what != "cachyos" {
+                    return Err("поки що можна завантажити лише `cachyos`".into());
+                }
+                let r = runner::get_cachyos(&dirs)?;
+                runner::set(&dirs, &r.name)?;
+                println!("встановлено і вибрано: {}", r.name);
             }
             Some(RunnerCmd::Use { name }) => {
                 let r = runner::set(&dirs, &name)?;
