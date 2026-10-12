@@ -244,6 +244,11 @@ struct Plan {
     pack: bool,
 }
 
+fn is_elf64(p: &Path) -> bool {
+    let mut h = [0u8; 5];
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut h)).is_ok() && &h[..4] == b"\x7fELF" && h[4] == 2
+}
+
 fn is_wine_pack(entries: &[Entry], exe: &Path) -> bool {
     let dir = exe.parent().unwrap_or(Path::new(""));
     exe.extension().is_some_and(|x| x == "sh") && entries.iter().any(|e| e.path == dir.join("game_info/game_info.txt"))
@@ -260,8 +265,8 @@ fn setup_wine_pack(root: &Path, dirs: &Dirs, id: &str, name: &str, exe: &Path, f
     if let Ok((w, _, r)) = crate::runner::ensure(dirs) {
         settings.push_str("export USE_SYSTEM_WINE=1\n");
         if let Some(rr) = &r.root {
-            if !rr.join("lib/wine/i386-unix").is_dir() && !rr.join("lib32/wine/i386-unix").is_dir() {
-                settings.push_str("export WINEARCH=win64\n"); // wow64 build (no 32-bit unix side): runs 32-bit games in a 64-bit prefix
+            if is_elf64(&rr.join("bin/wine")) {
+                settings.push_str("export WINEARCH=win64\n"); // wow64 build: its `wine` is 64-bit and runs 32-bit games in a 64-bit prefix
             }
             let dll = rr.join("lib/wine/dxvk/i386-windows/d3d9.dll");
             let dlls = pkg.join("game_info/dlls");
