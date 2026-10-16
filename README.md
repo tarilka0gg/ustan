@@ -11,7 +11,7 @@ uninstall, whatever the format.
 | `.snap` | unpacked without snapd; base and content snaps are fetched from the store (SHA3-384 verified) and run in a bubblewrap sandbox |
 | Flatpak (`flatpak:<id>`, `.flatpakref`, `.flatpak`) | delegated to `flatpak --user` |
 | `.exe`, `.msi` | run through Wine in a prefix per app; installers (`--installer`, `--installer-args "/S"`) have their Start Menu shortcuts turned into launchers |
-| `.tar.*`, `.zip`, `.7z` | menu entry for GUI programs, command in `~/.local/bin` for tools; Windows programs inside run through Wine |
+| `.tar.*`, `.zip`, `.7z` | menu entry for GUI programs, command in `~/.local/bin` for tools; Windows programs inside run through Wine. `tar.*` is streamed from disk and a multi-block `.xz` is decoded on several threads (Zig, over liblzma), so a multi-GB game archive does not have to fit in RAM. Games that ship a Wine wrapper (Kron4ek builds with `start.sh`) get their runner, DXVK (d3d9) and wow64 set up, and are named after the archive |
 | `.jar` | `java -jar` launcher |
 | makeself `.run`/`.sh` | the payload is unpacked; the embedded script is never run |
 | bare ELF binary | a menu entry or a command, depending on the toolkit it links |
@@ -29,12 +29,16 @@ ustan remove <id>               ustan prune        remove unused runtimes
 ustan update [id] [--check]     ustan scan [--update]   AppImages found elsewhere on disk
 ustan watch [--once]            check in the background; ustan autoupdate enable|disable
 ustan runner [use <name>]       which Wine to use (system, PortProton, Steam Proton, …)
+ustan runner get cachyos        download proton-cachyos from GitHub (sha512-checked)
 ustan register [--exe] [--archives]   open these file types with ustan on double click
 ```
 
 `ustan-gui` is the GTK4/libadwaita front end: it opens the files you double-click, shows what
 they are, with progress and a cancel button, and lists installed apps with Update / Launch /
-Remove. Running it without a file opens the manager.
+Remove. Running it without a file opens the manager. When a launched program dies right away, the GUI shows a toast with its output. AppImages start with
+`APPIMAGE_EXTRACT_AND_RUN=1` when FUSE 2 is missing.
+
+Messages are English by default and Ukrainian when the locale is `uk` (`LANG`, `LC_ALL`, `LANGUAGE`, or `USTAN_LANG=uk`).
 
 ## Notes
 
