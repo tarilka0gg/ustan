@@ -21,12 +21,26 @@ by the store, and say so when nothing could be checked.
 
 ## Screenshots
 
-| | |
-|---|---|
-| ![ustan opens an AppImage and shows what it is: name, format, Install](docs/img/inspect.png) | ![The progress bar and a Cancel button while a package is unpacked](docs/img/installing.png) |
-| ![Installed: Open or Close](docs/img/installed.png) | ![The manager: installed apps with Launch and Remove](docs/img/manager.png) |
+<table>
+  <tr>
+    <td width="50%"><a href="docs/img/inspect.png"><img src="docs/img/inspect.png" alt="Open a package" width="100%"></a></td>
+    <td width="50%"><a href="docs/img/installing.png"><img src="docs/img/installing.png" alt="Installing" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td><b>Open a package</b><br><sub>ustan opens a file, shows what it is (name, format, icon) and offers Install, Open or Extract here.</sub></td>
+    <td><b>Installing</b><br><sub>A progress bar with a Cancel button while the package is unpacked and the launcher is made.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/img/installed.png"><img src="docs/img/installed.png" alt="Installed" width="100%"></a></td>
+    <td width="50%"><a href="docs/img/manager.png"><img src="docs/img/manager.png" alt="The manager" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td><b>Installed</b><br><sub>Done: Open starts the program, Close ends.</sub></td>
+    <td><b>The manager</b><br><sub>Installed apps with their format and version, each with Launch and Remove.</sub></td>
+  </tr>
+</table>
 
-(`ustan-gui` on a Wayland desktop, with a few sample packages installed: a `.deb`, an AppImage, a tarball, a `.jar` and a bare binary.)
+<sub>ustan-gui on a Wayland desktop with a few sample packages installed (a .deb, an AppImage, a tarball, a .jar and a bare binary); click a picture to see it full-size.</sub>
 
 ## Use
 
