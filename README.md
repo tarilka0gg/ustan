@@ -19,6 +19,15 @@ uninstall, whatever the format.
 Downloads (`ustan install <url>`) are verified against a checksum published next to the file or
 by the store, and say so when nothing could be checked.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![ustan opens an AppImage and shows what it is: name, format, Install](docs/img/inspect.png) | ![The progress bar and a Cancel button while a package is unpacked](docs/img/installing.png) |
+| ![Installed: Open or Close](docs/img/installed.png) | ![The manager: installed apps with Launch and Remove](docs/img/manager.png) |
+
+(`ustan-gui` on a Wayland desktop, with a few sample packages installed: a `.deb`, an AppImage, a tarball, a `.jar` and a bare binary.)
+
 ## Use
 
 ```
