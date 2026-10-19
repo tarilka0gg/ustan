@@ -6,6 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+simple-locale = { git = "https://github.com/tarilka0gg/simple-locale", tag = "v0.1.0" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "1"

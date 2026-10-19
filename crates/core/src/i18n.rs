@@ -1,19 +1,13 @@
-//! Message language. English by default; Ukrainian when the locale is `uk*` (or `USTAN_LANG=uk`).
+//! Message language. English by default; Ukrainian when the shared Simple Linux setting says so (`simple-locale`: `USTAN_LANG=uk`,
+//! `SIMPLE_LANG=uk`, `lang = "uk"` in `locale.toml`, or a `uk` system locale).
 //! Messages are written with [`t!`]: the Ukrainian and the English text side by side.
 use std::sync::OnceLock;
 
+/// The message language: `en` or `uk`, decided by `simple-locale` (`USTAN_LANG`, `SIMPLE_LANG`, the shared `locale.toml`, the system
+/// locale; English when nothing says otherwise).
 pub fn english() -> bool {
     static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| {
-        for var in ["USTAN_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"] {
-            if let Ok(v) = std::env::var(var) {
-                if !v.is_empty() {
-                    return !v.to_lowercase().starts_with("uk");
-                }
-            }
-        }
-        true
-    })
+    *EN.get_or_init(|| simple_locale::resolve(&["en", "uk"], Some("USTAN_LANG")) == "en")
 }
 
 /// Text of a cancelled operation, as errors display it.

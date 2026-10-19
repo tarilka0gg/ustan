@@ -1699,6 +1699,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "simple-locale"
+version = "0.1.0"
+source = "git+https://github.com/tarilka0gg/simple-locale?tag=v0.1.0#9a3bd1e4701bc89465b5e79245e605b0d69187ee"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2104,6 +2109,7 @@ dependencies = [
  "sevenz-rust",
  "sha2",
  "sha3",
+ "simple-locale",
  "tar",
  "thiserror 1.0.69",
  "toml 0.8.23",

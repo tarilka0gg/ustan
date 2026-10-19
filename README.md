@@ -61,7 +61,7 @@ they are, with progress and a cancel button, and lists installed apps with Updat
 Remove. Running it without a file opens the manager. When a launched program dies right away, the GUI shows a toast with its output. AppImages start with
 `APPIMAGE_EXTRACT_AND_RUN=1` when FUSE 2 is missing.
 
-Messages are English by default and Ukrainian when the locale is `uk` (`LANG`, `LC_ALL`, `LANGUAGE`, or `USTAN_LANG=uk`).
+Messages are English by default and Ukrainian when the Simple Linux language setting says so: `USTAN_LANG=uk`, `SIMPLE_LANG=uk`, `lang = "uk"` in `~/.config/simple-linux/locale.toml`, or a `uk` system locale (the shared rule is in [simple-locale](https://github.com/tarilka0gg/simple-locale)).
 
 ## Notes
 
