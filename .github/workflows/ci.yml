@@ -11,6 +11,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: System libraries (liblzma for the xz decoder, libclang for the C bindings)
+        run: sudo apt-get update && sudo apt-get install -y liblzma-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The GTK front end needs libadwaita 1.6+, which the runner image may not have; the core
