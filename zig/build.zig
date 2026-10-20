@@ -11,6 +11,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .pic = true,
     });
+    // xzpar.zig calls liblzma; the tests link it themselves (the Rust build links it for the real binary)
+    mod.linkSystemLibrary("lzma", .{});
     const lib = b.addLibrary(.{
         .name = "ustanzig",
         .linkage = .static,
