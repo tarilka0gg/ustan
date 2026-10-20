@@ -1,5 +1,7 @@
 # ustan
 
+[![CI](https://github.com/tarilka0gg/ustan/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/ustan/actions/workflows/ci.yml) [![License](https://img.shields.io/github/license/tarilka0gg/ustan)](LICENSE) [![Changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue)](CHANGELOG.md)
+
 A Windows-style installer for Linux: open a package, see what it is, press *Install*.
 Everything goes into your home directory — no root — with a menu entry, an icon and a clean
 uninstall, whatever the format.
@@ -86,6 +88,10 @@ cargo test --workspace && (cd zig && zig build test)
 ```
 
 Gentoo: a live ebuild is in `packaging/gentoo/` (`app-misc/ustan-9999`).
+
+## Changelog
+
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
